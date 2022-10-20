@@ -101,6 +101,8 @@ venv.bak/
 .idea
 
 output/
+wandb/
+data/
 
 # PyTorch weights
 *.tar

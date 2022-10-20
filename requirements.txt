@@ -5,3 +5,4 @@ huggingface_hub
 apex
 wandb
 functorch
+fastai
