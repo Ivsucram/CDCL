@@ -378,7 +378,8 @@ def main():
     #args, args_text = _parse_args()
     args, args_text = _parse_args(config_path='configs/datasets/visda.yml')
 
-    # args.device_id = 3
+    args.device_id = 1
+    args.resume = './output/train/20221021-003735-cct_14_7x2_224-224/checkpoint-9.pth.tar'
     args.prefetcher = not args.no_prefetcher
     args.distributed = False
     if 'WORLD_SIZE' in os.environ:
@@ -672,6 +673,8 @@ def main():
         pin_memory=args.pin_mem,
     )
 
+    # create_paired_dataset(model, (loader_source_train, loader_target_train), args)
+
     # setup loss function
     if args.jsd_loss:
         assert num_aug_splits > 1  # JSD only valid with aug splits set
@@ -760,6 +763,20 @@ def main():
         _logger.info('*** Best metric: {0} (epoch {1})'.format(best_metric, best_epoch))
 
 
+def create_paired_dataset(model, loader, args):
+    loader_target = loader[1]
+    loader = loader[0]
+
+    if args.source_center_aware:
+        center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, loader)
+    else:
+        center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target)
+    dataset2 = center_aware_pseudo_module.reorder_loaders2(model, loader, loader_target)
+    dataset1 = center_aware_pseudo_module.reorder_loaders(model, loader, loader_target)
+
+    print('done')
+
+
 def train_one_epoch(
         epoch, model, loader, optimizer, loss_fn, args,
         lr_scheduler=None, saver=None, output_dir=None, amp_autocast=suppress,
@@ -819,21 +836,21 @@ def train_one_epoch(
                 if args.channels_last:
                     input_target = input_source.contiguous(memory_format=torch.channels_last)
 
-                input_source, input_target, label_source = center_aware_pseudo_module.reorder_datasets(model, input_source, label_source, input_target)
+                input_source, input_target, label_source = center_aware_pseudo_module.reorder_datasets2(model, input_source, label_source, input_target)
                 model.train()
                 if input_source is None:
                     sample_pairs_m.update(0)
                     continue
                 sample_pairs_m.update(input_source.size(0))
 
-                output, output_distil, output_target = model(input_source, input_target)
+                (output, output_distil, output_target), _ = model(input_source, input_target)
                 loss_s = loss_fn(output + 1e-8, label_source)
                 loss_t = loss_fn(output_target + 1e-8, label_source)
                 if not args.no_distil:
                     loss_d = distil_loss(output_target + 1e-8, output_distil + 1e-8)
         else:
             with amp_autocast():
-                output = model(input_source)
+                output, _ = model(input_source)
                 loss_s = loss_fn(output + 1e-8, label_source)
         loss = loss_s + loss_t + loss_d
 
@@ -956,7 +973,7 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
                 input = input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
-                output = model(input)
+                output, _ = model(input)
             if isinstance(output, (tuple, list)):
                 output = output[0]
 
@@ -1007,7 +1024,7 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
                 input = input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
-                output = model(input)
+                output, _ = model(input)
             if isinstance(output, (tuple, list)):
                 output = output[0]
 

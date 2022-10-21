@@ -6,27 +6,27 @@ num_classes: 12
 img_size: 224
 interpolation: bicubic
 train_interpolation: random
-aa: rand-m9-mstd0.5-inc1
+reprob: 0.25
+remode: pixel
+amp: True
+source_batch_size: 30
+target_batch_size: 30
+validation_batch_size: 128
+lr: 5e-5
+min_lr: 1e-6
+sched: cosine
+epochs: 100
+cooldown_epochs: 10
+warmup_epochs: 10
+warmup_lr: 1e-5
+opt: adamw
+workers: 2
+pretrained: True
+# aa: rand-m9-mstd0.5-inc1
 # mixup: 0.8
 # mixup_off_epoch: 0
 # mixup_prob: 1.0
 # mixup_mode: batch
 # mixup_switch_prob: 0.5
 # cutmix: 1.0
-reprob: 0.25
-remode: pixel
-amp: True
-source_batch_size: 32
-target_batch_size: 128
-validation_batch_size: 128
-lr: 5e-6
-min_lr: 1e-8
-sched: cosine
-epochs: 300
-cooldown_epochs: 10
-warmup_epochs: 0
-warmup_lr: 1e-5
-opt: adamw
 # smoothing: 0.1
-workers: 2
-pretrained: True

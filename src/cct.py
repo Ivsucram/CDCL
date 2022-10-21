@@ -82,18 +82,16 @@ class CCT(nn.Module):
             positional_embedding=positional_embedding
         )
 
-    def forward(self, x, x2=None, return_features=False):
+    def forward(self, x, x2=None):
         feat = self.tokenizer(x)
 
         if x2 is not None:
             feat2 = self.tokenizer(x2)
-            x, x_x2, x2 = self.classifier(feat, feat2)
-            return x, x_x2, x2
+            (x, x_x2, x2), (x_feat, x_x2_feat, x2_feat) = self.classifier(feat, feat2)
+            return (x, x_x2, x2), (x_feat, x_x2_feat, x2_feat)
 
-        x = self.classifier(feat)
-        if return_features:
-            return x, feat
-        return x
+        (x), (x_feat) = self.classifier(feat)
+        return (x), (x_feat)
 
 
 def _cct(arch, pretrained, progress,

@@ -374,7 +374,7 @@ class TransformerClassifier(Module):
         else:
             x = x[:, 0]
 
-        x = self.fc(x)
+        # x = self.fc(x)
 
         if x2 is not None:
             x2 = self.norm(x2)
@@ -387,11 +387,11 @@ class TransformerClassifier(Module):
                 x2 = x2[:, 0]
                 x2 = x_x2_fusion[:, 0]
 
-            x2 = self.fc(x2)
-            x_x2_fusion = self.fc(x_x2_fusion)
+            # x2 = self.fc(x2)
+            # x_x2_fusion = self.fc(x_x2_fusion)
 
-            return x, x_x2_fusion, x2
-        return x
+            return (self.fc(x), self.fc(x_x2_fusion), self.fc(x2)), (x, x_x2_fusion, x2)
+        return (self.fc(x)), (x)
 
     @staticmethod
     def init_weight(m):

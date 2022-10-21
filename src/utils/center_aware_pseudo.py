@@ -15,7 +15,7 @@ class CenterAwarePseudoModule(torch.nn.Module):
             if loader is None:
                 for n_iter, (input, _) in enumerate(tqdm.tqdm(loader_target)):
                     input = input.cuda()
-                    outputs, feas = model(input, return_features=True)
+                    (outputs), (feas) = model(input)
 
                     if n_iter == 0:
                         all_fea = torch.zeros(len(loader_target.dataset), feas.flatten(1).size(1))
@@ -66,25 +66,13 @@ class CenterAwarePseudoModule(torch.nn.Module):
             labelset = labelset[0]
             labelset = torch.LongTensor(labelset)
 
-            # dd = torch.cdist(all_fea, initc[labelset])
-            # pred_label = dd.argmin(1)
-            # pred_label = labelset[pred_label]
-
-            # for _ in range(1):
-            #     aff = torch.eye(K)[pred_label]
-            #     initc = aff.t().matmul(all_fea)
-            #     initc = initc / (1e-8 + aff.sum(0)[:, None])
-            #     dd = torch.cdist(all_fea, initc[labelset])
-            #     pred_label = dd.argmin(axis=1)
-            #     pred_label = labelset[pred_label]
-
             self.labelset = labelset
             self.initc = initc.cuda()
 
     def forward(self, model, x, distance='cosine'):
         model.eval()
         with torch.no_grad():
-            all_fea = model.tokenizer(x)
+            _, all_fea = model(x)
             all_fea = all_fea.flatten(1)
             if distance == 'cosine':
                 all_fea = torch.cat((all_fea, torch.ones(all_fea.size(0), 1).cuda()), 1)
@@ -107,11 +95,11 @@ class CenterAwarePseudoModule(torch.nn.Module):
 
             cx_s, cy_s, cx_t, cy_t = x_s, y_s, x_t, y_t
             if x_s.size(0) > x_t.size(0):
-                cx_s, cy_s = cycle(x_s), cycle(y_s)
-            elif x_s.size(0) < x_t.size(0):
                 cx_t, cy_t = cycle(x_t), cycle(y_t)
+            elif x_s.size(0) < x_t.size(0):
+                cx_s, cy_s = cycle(x_s), cycle(y_s)
 
-            distmat = torch.cdist(model.tokenizer(x_s).flatten(1), model.tokenizer(x_t).flatten(1))
+            distmat = torch.cdist(model(x_s)[1], model(x_t)[1])
 
             pairs = []
             for idx, (xs, xt, ys, yt) in enumerate(zip(cx_s, cx_t, cy_s, cy_t)):
@@ -122,9 +110,7 @@ class CenterAwarePseudoModule(torch.nn.Module):
 
             s, t, y = [None] * len(pairs), [None] * len(pairs), [None] * len(pairs)
             for i, (xs, xt, ys) in enumerate(pairs):
-                s[i] = xs
-                t[i] = xt
-                y[i] = ys
+                s[i], t[i], y[i]  = xs, xt, ys
 
             if len(s) == 0:
                 return None, None, None
@@ -138,37 +124,32 @@ class CenterAwarePseudoModule(torch.nn.Module):
         with torch.no_grad():
             _, C, H, W = x_s.size()
 
-            sim_mat = torch.matmul(x_s, x_t.T)
+            sim_mat = torch.matmul(model(x_s)[1], model(x_t)[1].T)
             _, knn_idx = torch.max(sim_mat, 1)
-            target_knn_sim, target_knn_idx = torch.max(sim_mat, 0)
-            _, knn_idx_topk = torch.topk(sim_mat, k=2, dim=1)
+            _, target_knn_idx = torch.max(sim_mat, 0)
             del sim_mat
-            y_t = self.ob
-
-            y_t = model(x_t).argmin(1)
-            if len(y_s.size()) > 1:
-                y_s = y_s.argmax()
-
-            cx_s, cy_s, cx_t, cy_t = x_s, y_s, x_t, y_t
-            if x_s.size(0) > x_t.size(0):
-                cx_s, cy_s = cycle(x_s), cycle(y_s)
-            elif x_s.size(0) < x_t.size(0):
-                cx_t, cy_t = cycle(x_t), cycle(y_t)
-
-            distmat = torch.cdist(model.tokenizer(x_s).flatten(1), model.tokenizer(x_t).flatten(1))
+            y_t = self(model, x_t)
 
             pairs = []
-            for idx, (xs, xt, ys, yt) in enumerate(zip(cx_s, cx_t, cy_s, cy_t)):
-                if ys == y_t[distmat[idx % distmat.size(0)].argmin()]:
-                    pairs.append((xs, x_t[distmat[idx % distmat.size(0)].argmin()], ys))
-                if y_s[distmat.t()[idx % distmat.t().size(0)].argmin()] == yt:
-                    pairs.append((x_s[distmat.t()[idx % distmat.t().size(0)].argmin()], xt, y_s[distmat.t()[idx % distmat.t().size(0)].argmin()]))
+            for idx, (xt, yt) in enumerate(zip(x_t, y_t)):
+                cur_idx = target_knn_idx[idx]
+                if cur_idx < 0: continue
+                xs = x_s[cur_idx]
+                ys = y_s[cur_idx]
+                if ys == yt:
+                    pairs.append((xs, xt, ys))
+
+            for idx, (xs, ys) in enumerate(zip(x_s, y_s)):
+                cur_idx = knn_idx[idx]
+                if cur_idx < 0: continue
+                xt = x_t[cur_idx]
+                yt = y_t[cur_idx]
+                if ys == yt:
+                    pairs.append((xs, xt, ys))
 
             s, t, y = [None] * len(pairs), [None] * len(pairs), [None] * len(pairs)
             for i, (xs, xt, ys) in enumerate(pairs):
-                s[i] = xs
-                t[i] = xt
-                y[i] = ys
+                s[i], t[i], y[i]  = xs, xt, ys
 
             if len(s) == 0:
                 return None, None, None
@@ -183,55 +164,129 @@ class CenterAwarePseudoModule(torch.nn.Module):
         with torch.no_grad():
             counter = 0
             for n_iter, (inputs, labels) in enumerate(tqdm.tqdm(loader)):
-                inputs = model.tokenizer(inputs).flatten(1)
+                _, feats = model(inputs)
+
                 if n_iter == 0:
                     _, C, H, W = inputs.size()
-                    x_s = torch.zeros(tuple([len(loader.dataset)] + list(inputs[0].size())))
-                    y_s = torch.zeros(tuple([len(loader.dataset)] + list(labels[0].size())))
+                    x_s = torch.zeros(tuple([len(loader.dataset)] + list(inputs.size())[1:]))
+                    f_s = torch.zeros(tuple([len(loader.dataset)] + [feats.size(1)]))
+                    y_s = torch.zeros(len(loader.dataset))
 
-                for _, (input, label) in enumerate(zip(inputs, labels)):
+                for _, (input, feat, label) in enumerate(zip(inputs, feats, labels)):
                     x_s[counter] = input.clone().float().cpu()
+                    f_s[counter] = feat.clone().float().cpu()
                     y_s[counter] = label.clone().float().cpu()
                     counter += 0
             
             counter = 0
             for n_iter, (inputs, _) in enumerate(tqdm.tqdm(loader_target)):
-                labels, inputs = model(inputs, return_features=True)
-                inputs = inputs.flatten(1)
+                _, feats = model(inputs)
+                labels = self(model, inputs)
 
                 if n_iter == 0:
-                    x_t = torch.zeros(tuple([len(loader_target.dataset)] + list(inputs[0].size())))
-                    y_t = torch.zeros(tuple([len(loader_target.dataset)] + list(labels[0].size())))
+                    x_t = torch.zeros(tuple([len(loader_target.dataset)] + list(inputs.size())[1:]))
+                    f_t = torch.zeros(tuple([len(loader_target.dataset)] + [feats.size(1)]))
+                    y_t = torch.zeros(len(loader_target.dataset))
 
-                for _, (input, label) in enumerate(zip(inputs, labels)):
+                for _, (input, feat, label) in enumerate(zip(inputs, feats, labels)):
                     x_t[counter] = input.clone().float().cpu()
+                    f_t[counter] = feat.clone().float().cpu()
                     y_t[counter] = label.clone().float().cpu()
                     counter += 0
 
         cx_s, cy_s, cx_t, cy_t = x_s, y_s, x_t, y_t
         if x_s.size(0) > x_t.size(0):
-            cx_s, cy_s = cycle(x_s), cycle(y_s)
-        elif x_s.size(0) < x_t.size(0):
             cx_t, cy_t = cycle(x_t), cycle(y_t)
+        elif x_s.size(0) < x_t.size(0):
+            cx_s, cy_s = cycle(x_s), cycle(y_s)
 
-        distmat = torch.cdist(model.tokenizer(x_s), model.tokenizer(x_t))
+        distmat = torch.cdist(f_s, f_t)
 
         pairs = []
-        for idx, (xs, xt, ys, yt) in enumerate(zip(cx_s, cx_t, cy_s, cy_t)):
+        for idx, (xs, xt, ys, yt) in enumerate(tqdm.tqdm(zip(cx_s, cx_t, cy_s, cy_t))):
             if ys == y_t[distmat[idx % distmat.size(0)].argmin()]:
                 pairs.append((xs, x_t[distmat[idx % distmat.size(0)].argmin()], ys))
             if y_s[distmat.t()[idx % distmat.t().size(0)].argmin()] == yt:
                 pairs.append((x_s[distmat.t()[idx % distmat.t().size(0)].argmin()], xt, y_s[distmat.t()[idx % distmat.t().size(0)].argmin()]))
 
         s, t, y = [None] * len(pairs), [None] * len(pairs), [None] * len(pairs)
-        for i, (xs, xt, ys) in enumerate(pairs):
-            s[i] = xs
-            t[i] = xt
-            y[i] = ys
+        for i, (xs, xt, ys) in enumerate(tqdm.tqdm(pairs)):
+            s[i], t[i], y[i]  = xs, xt, ys
 
         if len(s) == 0:
             return None, None, None
 
         s, t, y = torch.cat(s).view(-1, C, H, W), torch.cat(t).view(-1, C, H, W), torch.stack(y)
 
-        return s, t, y
+        return (s, t, y)
+
+    def reorder_loaders2(self, model, loader, loader_target):
+        model.eval()
+
+        with torch.no_grad():
+            counter = 0
+            for n_iter, (inputs, labels) in enumerate(tqdm.tqdm(loader)):
+                _, feats = model(inputs)
+
+                if n_iter == 0:
+                    _, C, H, W = inputs.size()
+                    x_s = torch.zeros(tuple([len(loader.dataset)] + list(inputs.size())[1:]))
+                    f_s = torch.zeros(tuple([len(loader.dataset)] + [feats.size(1)]))
+                    y_s = torch.zeros(len(loader.dataset))
+
+                for _, (input, feat, label) in enumerate(zip(inputs, feats, labels)):
+                    x_s[counter] = input.clone().float().cpu()
+                    f_s[counter] = feat.clone().float().cpu()
+                    y_s[counter] = label.clone().float().cpu()
+                    counter += 0
+            
+            counter = 0
+            for n_iter, (inputs, _) in enumerate(tqdm.tqdm(loader_target)):
+                _, feats = model(inputs)
+                labels = self(model, inputs)
+
+                if n_iter == 0:
+                    x_t = torch.zeros(tuple([len(loader_target.dataset)] + list(inputs.size())[1:]))
+                    f_t = torch.zeros(tuple([len(loader_target.dataset)] + [feats.size(1)]))
+                    y_t = torch.zeros(len(loader_target.dataset))
+
+                for _, (input, feat, label) in enumerate(zip(inputs, feats, labels)):
+                    x_t[counter] = input.clone().float().cpu()
+                    f_t[counter] = feat.clone().float().cpu()
+                    y_t[counter] = label.clone().float().cpu()
+                    counter += 0
+
+        sim_mat = torch.matmul(f_s, f_t.T)
+        _, knn_idx = torch.max(sim_mat, 1)
+        _, target_knn_idx = torch.max(sim_mat, 0)
+        del sim_mat
+        model.cpu()
+        y_t = self(model, x_t)
+
+        pairs = []
+        for idx, (xt, yt) in enumerate(tqdm.tqdm(zip(x_t, y_t))):
+            cur_idx = target_knn_idx[idx]
+            if cur_idx < 0: continue
+            xs = x_s[cur_idx]
+            ys = y_s[cur_idx]
+            if ys == yt:
+                pairs.append((xs, xt, ys))
+
+        for idx, (xs, ys) in enumerate(tqdm.tqdm(zip(x_s, y_s))):
+            cur_idx = knn_idx[idx]
+            if cur_idx < 0: continue
+            xt = x_t[cur_idx]
+            yt = y_t[cur_idx]
+            if ys == yt:
+                pairs.append((xs, xt, ys))
+
+        s, t, y = [None] * len(pairs), [None] * len(pairs), [None] * len(pairs)
+        for i, (xs, xt, ys) in enumerate(tqdm.tqdm(pairs)):
+            s[i], t[i], y[i]  = xs, xt, ys
+
+        if len(s) == 0:
+            return None, None, None
+
+        s, t, y = torch.cat(s).view(-1, C, H, W), torch.cat(t).view(-1, C, H, W), torch.stack(y)
+
+        return (s, t, y)
