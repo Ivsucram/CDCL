@@ -1,8 +1,9 @@
-experiment: mnist_to_usps
 dataset_source: mnist
 dataset_target: usps
+model: cct_7_7x2_28
+chans: 1
 num_classes: 10
-img_size: 32
+img_size: 28
 mean_source:
     - 0.1307
 std_source:
@@ -11,20 +12,18 @@ mean_target:
     - 0.2469
 std_target:
     - 0.2989
-crop_pct: 1.0
-scale:
-    - 0.8
-    - 1.0
+interpolation: bicubic
+train_interpolation: random
 amp: True
-batch_size: 100
-lr: 55e-5
-min_lr: 1e-5
+source_batch_size: 64
+target_batch_size: 64
+validation_batch_size: 128
+lr: 5e-5
+min_lr: 1e-6
 sched: cosine
-weight_decay: 6e-2
-epochs: 300
-warmup_epochs: 10
-center_aware_epochs: 10
-warmup_lr: 0.00001
+epochs: 50
+cooldown_epochs: 10
+warmup_epochs: 25
+warmup_lr: 1e-5
 opt: adamw
 workers: 2
-no_aug: True

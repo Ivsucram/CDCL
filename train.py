@@ -378,8 +378,6 @@ def main():
     #args, args_text = _parse_args()
     args, args_text = _parse_args(config_path='configs/datasets/visda.yml')
 
-    args.device_id = 1
-    args.resume = './output/train/20221021-003735-cct_14_7x2_224-224/checkpoint-9.pth.tar'
     args.prefetcher = not args.no_prefetcher
     args.distributed = False
     if 'WORLD_SIZE' in os.environ:
@@ -763,18 +761,18 @@ def main():
         _logger.info('*** Best metric: {0} (epoch {1})'.format(best_metric, best_epoch))
 
 
-def create_paired_dataset(model, loader, args):
-    loader_target = loader[1]
-    loader = loader[0]
+# def create_paired_dataset(model, loader, args):
+#     loader_target = loader[1]
+#     loader = loader[0]
 
-    if args.source_center_aware:
-        center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, loader)
-    else:
-        center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target)
-    dataset2 = center_aware_pseudo_module.reorder_loaders2(model, loader, loader_target)
-    dataset1 = center_aware_pseudo_module.reorder_loaders(model, loader, loader_target)
+#     if args.source_center_aware:
+#         center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, loader)
+#     else:
+#         center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target)
+#     dataset2 = center_aware_pseudo_module.reorder_loaders2(model, loader, loader_target)
+#     dataset1 = center_aware_pseudo_module.reorder_loaders(model, loader, loader_target)
 
-    print('done')
+#     print('done')
 
 
 def train_one_epoch(

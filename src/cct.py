@@ -2,6 +2,7 @@ from torch.hub import load_state_dict_from_url
 import torch.nn as nn
 from .utils.transformers import TransformerClassifier
 from .utils.tokenizer import Tokenizer
+from .utils.shink import Shrink
 from .utils.helpers import pe_check, fc_check
 
 try:
@@ -82,26 +83,89 @@ class CCT(nn.Module):
             positional_embedding=positional_embedding
         )
 
+        # self.shrink1 = Shrink(n_input_channels=embedding_dim,
+        #                       n_output_channels=embedding_dim*2,
+        #                       kernel_size=kernel_size,
+        #                       stride=stride,
+        #                       padding=padding,
+        #                       pooling_kernel_size=pooling_kernel_size,
+        #                       pooling_stride=pooling_stride,
+        #                       pooling_padding=pooling_padding,
+        #                       max_pool=True,
+        #                       activation=nn.ReLU,
+        #                       n_conv_layers=n_conv_layers,
+        #                       conv_bias=False,
+        #                       img_size = img_size//2)
+
+        # self.classifier2 = TransformerClassifier(
+        #     sequence_length=self.tokenizer.sequence_length(n_channels=n_input_channels,
+        #                                                    height=img_size//2,
+        #                                                    width=img_size//2),         
+        #     embedding_dim=embedding_dim*2,
+        #     dropout=dropout,
+        #     attention_dropout=attention_dropout,
+        #     stochastic_depth=stochastic_depth,
+        #     num_layers=num_layers,
+        #     num_heads=num_heads,
+        #     mlp_ratio=mlp_ratio
+        # )
+
+        # self.shrink2 = Shrink(n_input_channels=embedding_dim*2,
+        #                       n_output_channels=embedding_dim*4,
+        #                       kernel_size=kernel_size,
+        #                       stride=stride,
+        #                       padding=padding,
+        #                       pooling_kernel_size=pooling_kernel_size,
+        #                       pooling_stride=pooling_stride,
+        #                       pooling_padding=pooling_padding,
+        #                       max_pool=True,
+        #                       activation=nn.ReLU,
+        #                       n_conv_layers=n_conv_layers,
+        #                       conv_bias=False,
+        #                       img_size = img_size//4)     
+        
+        # self.classifier3 = TransformerClassifier(
+        #     sequence_length=self.tokenizer.sequence_length(n_channels=n_input_channels,
+        #                                                    height=img_size//4,
+        #                                                    width=img_size//4),
+        #     embedding_dim=embedding_dim*4,
+        #     dropout=dropout,
+        #     attention_dropout=attention_dropout,
+        #     stochastic_depth=stochastic_depth,
+        #     num_layers=num_layers,
+        #     num_heads=num_heads,
+        #     mlp_ratio=mlp_ratio      
+        # )
+
     def forward(self, x, x2=None):
-        feat = self.tokenizer(x)
+        x = self.tokenizer(x)
 
         if x2 is not None:
-            feat2 = self.tokenizer(x2)
-            (x, x_x2, x2), (x_feat, x_x2_feat, x2_feat) = self.classifier(feat, feat2)
+            x2 = self.tokenizer(x2)
+            # (_, _, _), (_, _, _), (x, x_x2, x2) = self.classifier(x, x2)
+            # x, x2, x_x2 = self.shrink1(x, x2, x_x2)
+            # (_, _, _), (_, _, _), (x, x_x2, x2) = self.classifier2(x, x2)
+            # x, x2, x_x2 = self.shrink2(x, x2, x_x2)
+            (x, x_x2, x2), (x_feat, x_x2_feat, x2_feat), (_, _, _) = self.classifier(x, x2)
             return (x, x_x2, x2), (x_feat, x_x2_feat, x2_feat)
 
-        (x), (x_feat) = self.classifier(feat)
+        # (_), (_), (x) = self.classifier(x)
+        # x = self.shrink1(x)
+        # (_), (_), (x) = self.classifier2(x)
+        # x = self.shrink2(x)
+        (x), (x_feat), (_) = self.classifier(x)
         return (x), (x_feat)
 
 
 def _cct(arch, pretrained, progress,
          num_layers, num_heads, mlp_ratio, embedding_dim,
-         kernel_size=3, stride=None, padding=None,
+         n_input_channels=3, kernel_size=3, stride=None, padding=None,
          positional_embedding='learnable',
          *args, **kwargs):
     stride = stride if stride is not None else max(1, (kernel_size // 2) - 1)
     padding = padding if padding is not None else max(1, (kernel_size // 2))
-    model = CCT(num_layers=num_layers,
+    model = CCT(n_input_channels=n_input_channels,
+                num_layers=num_layers,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
                 embedding_dim=embedding_dim,
@@ -309,6 +373,16 @@ def cct_7_7x2_224(pretrained=False, progress=False,
                   *args, **kwargs):
     return cct_7('cct_7_7x2_224', pretrained, progress,
                  kernel_size=7, n_conv_layers=2,
+                 img_size=img_size, positional_embedding=positional_embedding,
+                 num_classes=num_classes,
+                 *args, **kwargs)
+
+@register_model
+def cct_7_7x2_28(pretrained=False, progress=False,
+                  img_size=28, positional_embedding='learnable', num_classes=102,
+                  *args, **kwargs):
+    return cct_7('cct_7_7x2_28', pretrained, progress,
+                 n_input_channels=1, kernel_size=7, n_conv_layers=2,
                  img_size=img_size, positional_embedding=positional_embedding,
                  num_classes=num_classes,
                  *args, **kwargs)
