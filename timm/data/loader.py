@@ -246,13 +246,13 @@ def create_loader(
     loader_args = dict(
         batch_size=batch_size,
         shuffle=not isinstance(dataset, torch.utils.data.IterableDataset) and sampler is None and is_training,
-        num_workers=num_workers,
-        sampler=sampler,
-        collate_fn=collate_fn,
-        pin_memory=pin_memory,
-        drop_last=is_training,
-        worker_init_fn=partial(_worker_init, worker_seeding=worker_seeding),
-        persistent_workers=persistent_workers
+        # num_workers=num_workers,
+        # sampler=sampler,
+        # collate_fn=collate_fn,
+        # pin_memory=pin_memory,
+        # drop_last=is_training,
+        # worker_init_fn=partial(_worker_init, worker_seeding=worker_seeding),
+        # persistent_workers=persistent_workers
     )
     try:
         loader = loader_class(dataset, **loader_args)

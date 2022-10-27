@@ -1,14 +1,14 @@
 dataset_source: visda
 dataset_target: visda
-model: cct_7_7x2_224
-log_wandb: False
+model: cct_14_7x2_224
+chans: 3
 num_classes: 12
 img_size: 224
 interpolation: bicubic
 train_interpolation: random
 amp: True
-source_batch_size: 64
-target_batch_size: 64
+source_batch_size: 32
+target_batch_size: 32
 validation_batch_size: 128
 lr: 5e-5
 min_lr: 1e-6
@@ -19,3 +19,7 @@ warmup_epochs: 25
 warmup_lr: 1e-5
 opt: adamw
 workers: 2
+pretrained: False
+tasks: 4
+memory_size: 1000
+log_wandb: False

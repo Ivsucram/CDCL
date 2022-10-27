@@ -19,6 +19,7 @@ from cmath import isnan
 import logging
 import os
 import time
+
 from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
@@ -30,11 +31,10 @@ import yaml
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
 
 from timm import utils
-from timm.data import create_loader, Mixup, FastCollateMixup, AugMixDataset
 from timm.loss import JsdCrossEntropy, SoftTargetCrossEntropy, BinaryCrossEntropy, \
     LabelSmoothingCrossEntropy
 from timm.models import create_model, safe_model_name, resume_checkpoint, load_checkpoint, \
-    convert_splitbn_model, convert_sync_batchnorm, model_parameters, set_fast_norm
+    convert_sync_batchnorm, model_parameters, set_fast_norm
 from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler
 from timm.utils import ApexScaler, NativeScaler
@@ -69,8 +69,10 @@ except ImportError as e:
 
 from src.utils.data_config import resolve_data_config
 from src.utils.dataset_factory import create_dataset
+from src.utils.loader_factory import create_loaders
 from src.utils.center_aware_pseudo import CenterAwarePseudoModule
 from src.utils.distil_loss import DistilLoss
+from src.utils.memory_manager import RehearsalMemoryManager
 
 
 torch.backends.cudnn.benchmark = True
@@ -336,8 +338,8 @@ group.add_argument('--output', default='', type=str, metavar='PATH',
                     help='path to output folder (default: none, current dir)')
 group.add_argument('--experiment', default='', type=str, metavar='NAME',
                     help='name of train experiment, name of sub-folder for output')
-group.add_argument('--eval-metric', default='top1_t', type=str, metavar='EVAL_METRIC',
-                    help='Best metric (default: "top1_t"')
+group.add_argument('--eval-metric', default='cil_top1_t', type=str, metavar='EVAL_METRIC',
+                    help='Best metric (default: "cil_top1_t"')
 group.add_argument('--tta', type=int, default=0, metavar='N',
                     help='Test/inference time augmentation (oversampling) factor. 0=None (default: 0)')
 group.add_argument("--local-rank", default=0, type=int)
@@ -376,13 +378,14 @@ def _parse_args(config_path=None):
 def main():
     utils.setup_default_logging()
     #args, args_text = _parse_args()
-    args, args_text = _parse_args(config_path='configs/datasets/visda.yml')
+    args, args_text = _parse_args(config_path='configs/datasets/mnist_usps.yml')
 
     args.prefetcher = not args.no_prefetcher
+    args.prefetcher = False
     args.distributed = False
     if 'WORLD_SIZE' in os.environ:
         args.distributed = int(os.environ['WORLD_SIZE']) > 1
-    args.device = f'cuda:{args.device_id}' # TODO make it an arg, so we can access other deviecs (when multiple access are available)
+    args.device = f'cuda:{args.device_id}'
     torch.cuda.set_device(args.device)
     args.world_size = 1
     args.rank = 0  # global rank
@@ -442,7 +445,8 @@ def main():
         bn_momentum=args.bn_momentum,
         bn_eps=args.bn_eps,
         scriptable=args.torchscript,
-        checkpoint_path=args.initial_checkpoint)
+        checkpoint_path=args.initial_checkpoint,
+        args=args)
     if args.num_classes is None:
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
         args.num_classes = model.num_classes  # FIXME handle model default vs config num_classes more elegantly
@@ -455,17 +459,6 @@ def main():
             f'Model {safe_model_name(args.model)} created, param count:{sum([m.numel() for m in model.parameters()])}')
 
     data_config = resolve_data_config(vars(args), model=model, verbose=args.local_rank == 0)
-
-    # setup augmentation batch splits for contrastive loss or split bn
-    num_aug_splits = 0
-    if args.aug_splits > 0:
-        assert args.aug_splits > 1, 'A split of 1 makes no sense'
-        num_aug_splits = args.aug_splits
-
-    # enable split bn (separate bn stats per batch-portion)
-    if args.split_bn:
-        assert num_aug_splits > 1 or args.resplit
-        model = convert_splitbn_model(model, max(num_aug_splits, 2))
 
     # move model to GPU, enable channels last layout if set
     model.cuda()
@@ -561,117 +554,28 @@ def main():
         _logger.info('Scheduled epochs: {}'.format(num_epochs))
 
     # create the train and eval datasets
-    dataset_source_train = create_dataset(args.dataset_source, is_training=True)
-    dataset_source_eval = create_dataset(args.dataset_source, is_training=False)
+    dataset_source_train = create_dataset(args.dataset_source, is_training=True, args=args)
+    dataset_source_eval = create_dataset(args.dataset_source, is_training=False, args=args)
 
-    dataset_target_train = create_dataset(args.dataset_target, is_training=True)
-    dataset_target_eval = create_dataset(args.dataset_target, is_training=False)
+    dataset_target_train = create_dataset(args.dataset_target, is_training=True, args=args)
+    dataset_target_eval = create_dataset(args.dataset_target, is_training=False, args=args)
     if args.dataset_source == 'visda':
-        dataset_source_train = create_dataset(args.dataset_source, is_training=True)
-        dataset_source_eval = create_dataset(args.dataset_source, is_training=True)
+        dataset_source_train = create_dataset(args.dataset_source, is_training=True, args=args)
+        dataset_source_eval = create_dataset(args.dataset_source, is_training=True, args=args)
     if args.dataset_target == 'visda':
-        dataset_target_train = create_dataset(args.dataset_target, is_training=False)
-        dataset_target_eval = create_dataset(args.dataset_target, is_training=False)
-
-    # setup mixup / cutmix
-    collate_fn = None
-    mixup_fn = None
-    mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
-    if mixup_active:
-        mixup_args = dict(
-            mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
-            prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
-            label_smoothing=args.smoothing, num_classes=args.num_classes)
-        if args.prefetcher:
-            assert not num_aug_splits  # collate conflict (need to support deinterleaving in collate mixup)
-            collate_fn = FastCollateMixup(**mixup_args)
-        else:
-            mixup_fn = Mixup(**mixup_args)
-
-    # wrap dataset in AugMix helper
-    if num_aug_splits > 1:
-        dataset_source_train = AugMixDataset(dataset_source_train, num_splits=num_aug_splits)
+        dataset_target_train = create_dataset(args.dataset_target, is_training=False, args=args)
+        dataset_target_eval = create_dataset(args.dataset_target, is_training=False, args=args)
 
     # create data loaders w/ augmentation pipeiine
-    train_interpolation = args.train_interpolation
-    if args.no_aug or not train_interpolation:
-        train_interpolation = data_config['interpolation']
-    loader_source_train = create_loader(
-        dataset_source_train,
-        input_size=data_config['input_size'],
-        batch_size=args.source_batch_size,
-        is_training=True,
-        use_prefetcher=args.prefetcher,
-        no_aug=args.no_aug,
-        re_prob=args.reprob,
-        re_mode=args.remode,
-        re_count=args.recount,
-        re_split=args.resplit,
-        scale=args.scale,
-        ratio=args.ratio,
-        hflip=args.hflip,
-        vflip=args.vflip,
-        color_jitter=args.color_jitter,
-        auto_augment=args.aa,
-        num_aug_repeats=args.aug_repeats,
-        num_aug_splits=num_aug_splits,
-        interpolation=train_interpolation,
-        mean=data_config['mean_source'],
-        std=data_config['std_source'],
-        num_workers=args.workers,
-        distributed=args.distributed,
-        collate_fn=collate_fn,
-        pin_memory=args.pin_mem,
-        use_multi_epochs_loader=args.use_multi_epochs_loader,
-        worker_seeding=args.worker_seeding,
+    (loader_source_train, loader_source_eval,
+     loader_target_train, loader_target_eval,
+     num_aug_splits, mixup_active, mixup_fn) = create_loaders(
+        dataset_source_train, dataset_source_eval,
+        dataset_target_train, dataset_target_eval,
+        data_config, args
     )
 
-    loader_source_eval = create_loader(
-        dataset_source_eval,
-        input_size=data_config['input_size'],
-        batch_size=args.validation_batch_size or args.source_batch_size,
-        is_training=False,
-        use_prefetcher=args.prefetcher,
-        interpolation=data_config['interpolation'],
-        mean=data_config['mean_source'],
-        std=data_config['std_source'],
-        num_workers=args.workers,
-        distributed=args.distributed,
-        crop_pct=data_config['crop_pct'],
-        pin_memory=args.pin_mem,
-    )
-
-    loader_target_train = create_loader(
-        dataset_target_train,
-        input_size=data_config['input_size'],
-        batch_size=args.target_batch_size,
-        is_training=True,
-        use_prefetcher=args.prefetcher,
-        interpolation=data_config['interpolation'],
-        mean=data_config['mean_target'],
-        std=data_config['std_target'],
-        num_workers=args.workers,
-        distributed=args.distributed,
-        crop_pct=data_config['crop_pct'],
-        pin_memory=args.pin_mem,
-    )
-
-    loader_target_eval = create_loader(
-        dataset_target_eval,
-        input_size=data_config['input_size'],
-        batch_size=args.validation_batch_size or args.target_batch_size,
-        is_training=False,
-        use_prefetcher=args.prefetcher,
-        interpolation=data_config['interpolation'],
-        mean=data_config['mean_target'],
-        std=data_config['std_target'],
-        num_workers=args.workers,
-        distributed=args.distributed,
-        crop_pct=data_config['crop_pct'],
-        pin_memory=args.pin_mem,
-    )
-
-    # create_paired_dataset(model, (loader_source_train, loader_target_train), args)
+    memory_manager = RehearsalMemoryManager(args=args)
 
     # setup loss function
     if args.jsd_loss:
@@ -692,6 +596,7 @@ def main():
         train_loss_fn = nn.CrossEntropyLoss()
     train_loss_fn = train_loss_fn.cuda()
     distil_loss_fn = DistilLoss().cuda()
+    loss_kl_fn = nn.KLDivLoss(reduction="batchmean").cuda()
     validate_loss_fn = nn.CrossEntropyLoss().cuda()
 
     # setup checkpoint saver and eval metric tracking
@@ -718,42 +623,57 @@ def main():
             f.write(args_text)
 
     try:
-        for epoch in range(start_epoch, num_epochs):
-            if args.distributed and hasattr(loader_source_train.sampler, 'set_epoch'):
-                loader_source_train.sampler.set_epoch(epoch)
+        for task in range(args.tasks):
+            (loader_source_train, _, loader_target_train, _, num_aug_splits, mixup_active, mixup_fn) = create_loaders(
+                dataset_source_train, dataset_source_eval, dataset_target_train, dataset_target_eval, data_config, args, task
+            )
 
-            train_metrics = train_one_epoch(
-                epoch, model, (loader_source_train, loader_target_train), optimizer, (train_loss_fn, distil_loss_fn), args,
-                lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
-                amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn)
+            for epoch in range(start_epoch, num_epochs):
+                if args.distributed and hasattr(loader_source_train.sampler, 'set_epoch'):
+                    loader_source_train.sampler.set_epoch(epoch)
 
-            if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                if args.local_rank == 0:
-                    _logger.info("Distributing BatchNorm running means and vars")
-                utils.distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
+                train_metrics = train_one_epoch(
+                    epoch, model, (loader_source_train, loader_target_train), optimizer, (train_loss_fn, distil_loss_fn, loss_kl_fn), args,
+                    lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
+                    amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn, task=task,
+                    memory_manager=memory_manager, last_epoch = (epoch == num_epochs - 1))
 
-            eval_metrics = validate(model, (loader_source_eval, loader_target_eval), validate_loss_fn, args, amp_autocast=amp_autocast)
+                if epoch == num_epochs - 1:
+                    memory_manager.increment_task()
 
-            if model_ema is not None and not args.model_ema_force_cpu:
                 if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                    utils.distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
-                ema_eval_metrics = validate(
-                    model_ema.module, (loader_source_eval, loader_target_eval), validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)')
-                eval_metrics = ema_eval_metrics
+                    if args.local_rank == 0:
+                        _logger.info("Distributing BatchNorm running means and vars")
+                    utils.distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
-            if lr_scheduler is not None:
-                # step LR for next epoch
-                lr_scheduler.step(epoch + 1, eval_metrics[eval_metric])
+                for test_task in range(task+1):
 
-            if output_dir is not None:
-                utils.update_summary(
-                    epoch, train_metrics, eval_metrics, os.path.join(output_dir, 'summary.csv'),
-                    write_header=best_metric is None, log_wandb=args.log_wandb and has_wandb)
+                    (_, loader_source_eval, _, loader_target_eval, num_aug_splits, mixup_active, mixup_fn) = create_loaders(
+                        dataset_source_train, dataset_source_eval, dataset_target_train, dataset_target_eval, data_config, args, test_task
+                    )
 
-            if saver is not None:
-                # save proper checkpoint with eval metric
-                save_metric = eval_metrics[eval_metric]
-                best_metric, best_epoch = saver.save_checkpoint(epoch, metric=save_metric)
+                    eval_metrics = validate(model, (loader_source_eval, loader_target_eval), validate_loss_fn, args, amp_autocast=amp_autocast, til_task=test_task, cil_task=task)
+
+                    if model_ema is not None and not args.model_ema_force_cpu:
+                        if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
+                            utils.distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
+                        ema_eval_metrics = validate(
+                            model_ema.module, (loader_source_eval, loader_target_eval), validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)', til_task=test_task, cil_task=task)
+                        eval_metrics = ema_eval_metrics
+
+                    if lr_scheduler is not None:
+                        # step LR for next epoch
+                        lr_scheduler.step(epoch + 1, eval_metrics[eval_metric])
+
+                    if output_dir is not None:
+                        utils.update_summary(
+                            epoch, train_metrics, eval_metrics, os.path.join(output_dir, 'summary.csv'),
+                            write_header=best_metric is None, log_wandb=args.log_wandb and has_wandb, train_task=task, test_task=test_task)
+
+                    # if saver is not None:
+                        # save proper checkpoint with eval metric
+                        # save_metric = eval_metrics[eval_metric]
+                        # best_metric, best_epoch = saver.save_checkpoint(epoch, metric=save_metric)
 
     except KeyboardInterrupt:
         pass
@@ -761,29 +681,19 @@ def main():
         _logger.info('*** Best metric: {0} (epoch {1})'.format(best_metric, best_epoch))
 
 
-# def create_paired_dataset(model, loader, args):
-#     loader_target = loader[1]
-#     loader = loader[0]
-
-#     if args.source_center_aware:
-#         center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, loader)
-#     else:
-#         center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target)
-#     dataset2 = center_aware_pseudo_module.reorder_loaders2(model, loader, loader_target)
-#     dataset1 = center_aware_pseudo_module.reorder_loaders(model, loader, loader_target)
-
-#     print('done')
-
-
 def train_one_epoch(
         epoch, model, loader, optimizer, loss_fn, args,
         lr_scheduler=None, saver=None, output_dir=None, amp_autocast=suppress,
-        loss_scaler=None, model_ema=None, mixup_fn=None):
+        loss_scaler=None, model_ema=None, mixup_fn=None, task=0, last_k=None, memory_manager=None, last_epoch=False):
 
     loader_target = loader[1]
     loader = loader[0]
-    distil_loss = loss_fn[1]
-    loss_fn = loss_fn[0]
+    loss_distil_fn = loss_fn[1]
+    loss_kl_fn = loss_fn[2]
+    loss_cross_entropy_fn = loss_fn[0]
+    if last_k is not None:
+        last_k_importance = last_k[1]
+        last_k = last_k = [0]
 
     if args.mixup_off_epoch and epoch >= args.mixup_off_epoch:
         if args.prefetcher and loader.mixup_enabled:
@@ -794,9 +704,27 @@ def train_one_epoch(
     second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
     batch_time_m = utils.AverageMeter()
     sample_pairs_m = utils.AverageMeter()
-    losses_s_m = utils.AverageMeter()
-    losses_t_m = utils.AverageMeter()
-    losses_d_m = utils.AverageMeter()
+    losses_accumulator_s_m = utils.AverageMeter()
+    losses_accumulator_t_m = utils.AverageMeter()
+    losses_accumulator_d_m = utils.AverageMeter()
+    losses_accumulator_i_m = utils.AverageMeter()
+    losses_accumulator_a_m = utils.AverageMeter()
+    losses_accumulator_r_m = utils.AverageMeter()
+
+    mask = torch.zeros(args.num_classes).cuda()
+    for i in range(mask.size(0)):
+        if (args.num_classes // args.tasks * (task)) <= i < (args.num_classes // args.tasks * (task + 1)):
+            mask[i] = 1
+
+    loader_memory = None
+    if task > 0:
+        memory_task = epoch % task
+        loader_memory = memory_manager.dataset_loader(task=memory_task)
+
+        memory_mask = torch.zeros(args.num_classes).cuda()
+        for i in range(memory_mask.size(0)):
+            if (args.num_classes // args.tasks * (memory_task)) <= i < (args.num_classes // args.tasks * (memory_task + 1)):
+                memory_mask[i] = 1
 
     model.train()
 
@@ -804,7 +732,10 @@ def train_one_epoch(
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
     dataloader_target_iterator = iter(loader_target)
-    for batch_idx, (input_source, label_source) in enumerate(loader):
+    if loader_memory is not None:
+        dataloader_memory_iterator = iter(loader_memory)
+
+    for batch_idx, (input_source, label_source, _) in enumerate(loader):
         last_batch = batch_idx == last_idx
         if not args.prefetcher:
             input_source, label_source = input_source.cuda(), label_source.cuda()
@@ -813,49 +744,88 @@ def train_one_epoch(
         if args.channels_last:
             input_source = input_source.contiguous(memory_format=torch.channels_last)
 
-        loss_s, loss_t, loss_d = torch.zeros(1).cuda(), torch.zeros(1).cuda(), torch.zeros(1).cuda()
+        loss_s, loss_t, loss_d = torch.zeros(1).cuda(), torch.zeros(1).cuda(), torch.zeros(1).cuda() # source, target, distil
+        loss_a, loss_i, loss_r = torch.zeros(1).cuda(), torch.zeros(1).cuda(), torch.zeros(1).cuda() # accumulator, injection, replay
         if epoch >= args.warmup_epochs:
             if batch_idx == 0:
                 _logger.info('Computing pseudo-labels centroids')
                 if args.source_center_aware:
-                    center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, loader)
+                    center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, loader, task=task)
                 else:
-                    center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target)
+                    center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, task=task)
                 model.train()
+                if last_epoch:
+                    _logger.info('Slower epoch: Saving confident paired samples into memory')
 
             with amp_autocast():
                 try:
-                    (input_target, label_target) = next(dataloader_target_iterator)
+                    (input_target, _, _) = next(dataloader_target_iterator)
                 except StopIteration:
                     dataloader_target_iterator = iter(loader_target)
-                    (input_target, label_target) = next(dataloader_target_iterator)
+                    (input_target, _, _) = next(dataloader_target_iterator)
                 if not args.prefetcher:
-                    input_target, label_target = input_target.cuda(), label_target.cuda()
+                    input_target = input_target.cuda()
                 if args.channels_last:
                     input_target = input_source.contiguous(memory_format=torch.channels_last)
 
-                input_source, input_target, label_source = center_aware_pseudo_module.reorder_datasets2(model, input_source, label_source, input_target)
+                (inj_input_source, inj_input_target, inj_label_source), (acc_input_source, acc_input_target, acc_label_source) = center_aware_pseudo_module.reorder_datasets2(model, input_source, label_source, input_target, task=task)
                 model.train()
-                if input_source is None:
+                
+                if acc_input_source is None:
                     sample_pairs_m.update(0)
-                    continue
-                sample_pairs_m.update(input_source.size(0))
+                    injection_output, accumulator_output, _ = model(input_source, task=task)
+                    accumulator_output = accumulator_output * torch.transpose(mask, 0, 0)
+                    loss_i = loss_cross_entropy_fn(injection_output + 1e-8, label_source - (args.num_classes // args.tasks * task))
+                    loss_s = loss_cross_entropy_fn(accumulator_output + 1e-8, label_source)
+                else:    
+                    sample_pairs_m.update(input_source.size(0))
 
-                (output, output_distil, output_target), _ = model(input_source, input_target)
-                loss_s = loss_fn(output + 1e-8, label_source)
-                loss_t = loss_fn(output_target + 1e-8, label_source)
-                if not args.no_distil:
-                    loss_d = distil_loss(output_target + 1e-8, output_distil + 1e-8)
+                    ((injection_output, injection_output_target, injection_output_fusion),
+                    (accumulator_output, accumulator_output_target, accumulator_output_fusion),
+                    _) = model(acc_input_source, acc_input_target, task=task)
+
+                    accumulator_output, accumulator_output_target, accumulator_output_fusion = accumulator_output * torch.transpose(mask, 0, 0), accumulator_output_target * torch.transpose(mask, 0, 0), accumulator_output_fusion * torch.transpose(mask, 0, 0)
+
+                    loss_s = loss_cross_entropy_fn(accumulator_output + 1e-8, acc_label_source)
+                    loss_t = loss_cross_entropy_fn(accumulator_output_target + 1e-8, acc_label_source)
+                    loss_d = loss_distil_fn(accumulator_output_target + 1e-8, accumulator_output_fusion + 1e-8)
+
+                    loss_i = loss_cross_entropy_fn(injection_output + 1e-8, acc_label_source - (args.num_classes // args.tasks * task))
+                    loss_i += loss_cross_entropy_fn(injection_output_target + 1e-8, acc_label_source - (args.num_classes // args.tasks * task))
+                    loss_i += loss_distil_fn(injection_output_target + 1e-8, injection_output_fusion + 1e-8)
+
+                if last_epoch and inj_input_source is not None:
+                        for xs, xt, ys, ils, ilt, als, alt in zip(inj_input_source, inj_input_target, inj_label_source, injection_output, injection_output_target, accumulator_output, accumulator_output_target):
+                            memory_manager.add_sample(xs, xt, ys, ils, ilt, als, alt, task)
         else:
             with amp_autocast():
-                output, _ = model(input_source)
-                loss_s = loss_fn(output + 1e-8, label_source)
-        loss = loss_s + loss_t + loss_d
+                injection_output, accumulator_output, _ = model(input_source, task=task)
+                accumulator_output = accumulator_output * torch.transpose(mask, 0, 0)
+                loss_i = loss_cross_entropy_fn(injection_output + 1e-8, label_source - (args.num_classes // args.tasks * task))
+                loss_s = loss_cross_entropy_fn(accumulator_output + 1e-8, label_source)
 
-        if not args.distributed:
-            losses_s_m.update(loss_s.item(), input_source.size(0))
-            losses_t_m.update(loss_t.item(), input_source.size(0))
-            losses_d_m.update(loss_d.item(), input_source.size(0))
+        if task > 0:
+            try:
+                (source_memory, target_memory, label_memory, source_logit, target_logit) = next(dataloader_memory_iterator)
+            except StopIteration:
+                dataloader_memory_iterator = iter(loader_memory)
+                (source_memory, target_memory, label_memory, source_logit, target_logit) = next(dataloader_memory_iterator)
+
+            source_memory, target_memory, label_memory, source_logit, target_logit = source_memory.cuda(), target_memory.cuda(), label_memory.cuda(), source_logit.cuda(), target_logit.cuda()
+
+            (_, (memory_output, memory_output_target, memory_output_fusion), _) = model(source_memory, target_memory, task=memory_task)
+
+            memory_output, memory_output_target, memory_output_fusion = memory_output * torch.transpose(memory_mask, 0, 0), memory_output_target * torch.transpose(memory_mask, 0, 0), memory_output_fusion * torch.transpose(memory_mask, 0, 0)
+            source_logit, target_logit = source_logit * torch.transpose(memory_mask, 0, 0), target_logit * torch.transpose(memory_mask, 0, 0)
+
+            loss_r = loss_kl_fn(nn.Softmax(1)(memory_output), nn.Softmax(1)(source_logit))
+            loss_r += loss_kl_fn(nn.Softmax(1)(memory_output_target), nn.Softmax(1)(target_logit))
+            loss_r += loss_cross_entropy_fn(memory_output + 1e-8, label_memory)
+            loss_r += loss_cross_entropy_fn(memory_output_target + 1e-8, label_memory)
+            loss_r += loss_distil_fn(memory_output_target + 1e-8, memory_output_fusion + 1e-8)
+
+        alpha_1, alpha_2, alpha_3, alpha_4, alpha_5, alpha_6 = 1., 1., 1., 1., 1., 1.
+        loss = alpha_1 * loss_s + alpha_2 * loss_t + alpha_3 * loss_d + alpha_4 * loss_a + alpha_5 * loss_i + alpha_6 * loss_r
 
         optimizer.zero_grad()
         if loss_scaler is not None:
@@ -872,6 +842,14 @@ def train_one_epoch(
                     value=args.clip_grad, mode=args.clip_mode)
             optimizer.step()
 
+        if not args.distributed:
+            losses_accumulator_s_m.update(loss_s.item(), input_source.size(0))
+            losses_accumulator_t_m.update(loss_t.item(), input_source.size(0))
+            losses_accumulator_d_m.update(loss_d.item(), input_source.size(0))
+            losses_accumulator_i_m.update(loss_i.item(), input_source.size(0))
+            losses_accumulator_a_m.update(loss_a.item(), input_source.size(0))
+            losses_accumulator_r_m.update(loss_r.item(), input_source.size(0))
+
         if model_ema is not None:
             model_ema.update(model)
 
@@ -884,40 +862,54 @@ def train_one_epoch(
 
             if args.distributed:
                 reduced_loss = utils.reduce_tensor(loss.data, args.world_size)
-                losses_s_m.update(reduced_loss.item(), input_source.size(0))
+                losses_accumulator_s_m.update(reduced_loss.item(), input_source.size(0))
 
             if True: #args.local_rank == 0:
                 if epoch >= args.warmup_epochs:
                     _logger.info(
-                        'Train: {0} [{1:>4d}/{2} ({3:>3.0f}%)]  '
+                        'Task {0} '
+                        'Train: {1} [{2:>4d}/{3} ({4:>3.0f}%)]  '
                         'Loss_s: {loss_s.val:#.4g} ({loss_s.avg:#.3g})  '
                         'Loss_t: {loss_t.val:#.4g} ({loss_t.avg:#.3g})  '
                         'Loss_d: {loss_d.val:#.4g} ({loss_d.avg:#.3g})  '
+                        'Loss_i: {loss_i.val:#.4g} ({loss_i.avg:#.3g})  '
+                        'Loss_a: {loss_a.val:#.4g} ({loss_a.avg:#.3g})  '
+                        'Loss_r: {loss_r.val:#.4g} ({loss_r.avg:#.3g})  '
                         'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
                         '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
                         'LR: {lr:.3e}   '
                         'Pairs: {pairs.val}/{pairs.sum} ({pairs.avg:#.3g})'.format(
-                            epoch,
+                            task, epoch,
                             batch_idx, len(loader),
                             100. * batch_idx / last_idx,
-                            loss_s=losses_s_m,
-                            loss_t=losses_t_m,
-                            loss_d=losses_d_m,
+                            loss_s=losses_accumulator_s_m,
+                            loss_t=losses_accumulator_t_m,
+                            loss_d=losses_accumulator_d_m,
+                            loss_i=losses_accumulator_i_m,
+                            loss_a=losses_accumulator_a_m,
+                            loss_r=losses_accumulator_r_m,
                             batch_time=batch_time_m,
                             rate=input_source.size(0) * args.world_size / batch_time_m.val,
                             rate_avg=input_source.size(0) * args.world_size / batch_time_m.avg,
                             lr=lr, pairs=sample_pairs_m))
                 else:
                     _logger.info(
-                        'Train: {0} [{1:>4d}/{2} ({3:>3.0f}%)]  '
-                        'Loss: {loss.val:#.4g} ({loss.avg:#.3g})  '
+                        'Task {0} '
+                        'Train: {1} [{2:>4d}/{3} ({4:>3.0f}%)]  '
+                        'Loss_s: {loss_s.val:#.4g} ({loss_s.avg:#.3g})  '
+                        'Loss_i: {loss_i.val:#.4g} ({loss_i.avg:#.3g})  '
+                        'Loss_a: {loss_a.val:#.4g} ({loss_a.avg:#.3g})  '
+                        'Loss_r: {loss_r.val:#.4g} ({loss_r.avg:#.3g})  '
                         'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
                         '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
                         'LR: {lr:.3e}'.format(
-                            epoch,
+                            task, epoch,
                             batch_idx, len(loader),
                             100. * batch_idx / last_idx,
-                            loss=losses_s_m,
+                            loss_s=losses_accumulator_s_m,
+                            loss_i=losses_accumulator_i_m,
+                            loss_a=losses_accumulator_a_m,
+                            loss_r=losses_accumulator_r_m,
                             batch_time=batch_time_m,
                             rate=input_source.size(0) * args.world_size / batch_time_m.val,
                             rate_avg=input_source.size(0) * args.world_size / batch_time_m.avg,
@@ -935,7 +927,7 @@ def train_one_epoch(
             saver.save_recovery(epoch, batch_idx=batch_idx)
 
         if lr_scheduler is not None:
-            lr_scheduler.step_update(num_updates=num_updates, metric=losses_s_m.avg)
+            lr_scheduler.step_update(num_updates=num_updates, metric=losses_accumulator_s_m.avg)
 
         end = time.time()
         # end for
@@ -943,17 +935,23 @@ def train_one_epoch(
     if hasattr(optimizer, 'sync_lookahead'):
         optimizer.sync_lookahead()
 
-    return OrderedDict([('loss', losses_s_m.avg)])
+    return OrderedDict([('loss', losses_accumulator_s_m.avg)])
 
 
-def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix=''):
+def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='', til_task=0, cil_task=0):
     batch_time_m = utils.AverageMeter()
-    losses_s_m = utils.AverageMeter()
-    losses_t_m = utils.AverageMeter()
-    top1_s_m = utils.AverageMeter()
-    top5_s_m = utils.AverageMeter()
-    top1_t_m = utils.AverageMeter()
-    top5_t_m = utils.AverageMeter()
+    cil_losses_s_m = utils.AverageMeter()
+    cil_losses_t_m = utils.AverageMeter()
+    til_losses_s_m = utils.AverageMeter()
+    til_losses_t_m = utils.AverageMeter()
+    cil_top1_s_m = utils.AverageMeter()
+    cil_top5_s_m = utils.AverageMeter()
+    cil_top1_t_m = utils.AverageMeter()
+    cil_top5_t_m = utils.AverageMeter()
+    til_top1_s_m = utils.AverageMeter()
+    til_top5_s_m = utils.AverageMeter()
+    til_top1_t_m = utils.AverageMeter()
+    til_top5_t_m = utils.AverageMeter()
 
     loader_target = loader[1]
     loader = loader[0]
@@ -963,7 +961,7 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
     end = time.time()
     last_idx = len(loader_target) - 1
     with torch.no_grad():
-        for batch_idx, (input, label) in enumerate(loader_target):
+        for batch_idx, (input, label, _) in enumerate(loader_target):
             last_batch = batch_idx == last_idx
             if not args.prefetcher:
                 input, label = input.cuda(), label.cuda()
@@ -971,50 +969,70 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
                 input = input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
-                output, _ = model(input)
-            if isinstance(output, (tuple, list)):
-                output = output[0]
+                _, cil_output, _ = model(input, task=cil_task)
+                til_output, _, _ = model(input, task=til_task)
+            if isinstance(cil_output, (tuple, list)): cil_output = cil_output[0]
+            if isinstance(til_output, (tuple, list)): til_output = til_output[0]
 
             # augmentation reduction
             reduce_factor = args.tta
             if reduce_factor > 1:
-                output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+                cil_output = cil_output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+                til_output = til_output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
                 label = label[0:label.size(0):reduce_factor]
 
-            loss = loss_fn(output, label)
-            acc1, acc5 = utils.accuracy(output, label, topk=(1, 5))
+            loss_cil = loss_fn(cil_output, label)
+            loss_til = loss_fn(til_output, label - (args.num_classes // args.tasks * til_task))
+            cil_acc1, cil_acc5 = utils.accuracy(cil_output, label, topk=(1, 5))
+            til_acc1, til_acc5 = utils.accuracy(til_output, label - (args.num_classes // args.tasks * til_task), topk=(1, 5))
 
             if args.distributed:
-                reduced_loss = utils.reduce_tensor(loss.data, args.world_size)
-                acc1 = utils.reduce_tensor(acc1, args.world_size)
-                acc5 = utils.reduce_tensor(acc5, args.world_size)
+                reduced_loss_cil = utils.reduce_tensor(loss_cil.data, args.world_size)
+                cil_acc1 = utils.reduce_tensor(cil_acc1, args.world_size)
+                cil_acc5 = utils.reduce_tensor(cil_acc5, args.world_size)
             else:
-                reduced_loss = loss.data
+                reduced_loss_cil = loss_cil.data
+
+            cil_losses_t_m.update(reduced_loss_cil.item(), input.size(0))
+            cil_top1_t_m.update(cil_acc1.item(), cil_output.size(0))
+            cil_top5_t_m.update(cil_acc5.item(), cil_output.size(0))
+
+            if args.distributed:
+                reduced_loss_til = utils.reduce_tensor(loss_til.data, args.world_size)
+                til_acc1 = utils.reduce_tensor(til_acc1, args.world_size)
+                til_acc5 = utils.reduce_tensor(til_acc5, args.world_size)
+            else:
+                reduced_loss_til = loss_til.data
 
             torch.cuda.synchronize()
 
-            losses_t_m.update(reduced_loss.item(), input.size(0))
-            top1_t_m.update(acc1.item(), output.size(0))
-            top5_t_m.update(acc5.item(), output.size(0))
+            til_losses_t_m.update(reduced_loss_til.item(), input.size(0))
+            til_top1_t_m.update(til_acc1.item(), til_output.size(0))
+            til_top5_t_m.update(til_acc5.item(), til_output.size(0))
 
             batch_time_m.update(time.time() - end)
             end = time.time()
             if last_batch or batch_idx % args.log_interval == 0:
-                log_name = 'TestT' + log_suffix
+                log_name = f'TestT {til_task}' + log_suffix
                 _logger.info(
                     '{0}: [{1:>4d}/{2} ({3:>3.0f}%)]  '
                     'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
-                    'Loss_t: {loss_t.avg:>6.4f}  '
-                    'Acc_t@1: {top1t.avg:>7.4f}  '
-                    'Acc_t@5: {top5t.avg:>7.4f}'.format(
+                    'CIL_Loss_t: {cil_loss_t.avg:>6.4f}  '
+                    'CIL_Acc_t@1: {cil_top1t.avg:>7.4f}  '
+                    'CIL_Acc_t@5: {cil_top5t.avg:>7.4f}  '
+                    'TIL_Loss_t: {til_loss_t.avg:>6.4f}  '
+                    'TIL_Acc_t@1: {til_top1t.avg:>7.4f}  '
+                    'TIL_Acc_t@5: {til_top5t.avg:>7.4f}'.format(
                         log_name, batch_idx, last_idx, 100. * batch_idx / last_idx,
                         batch_time=batch_time_m,
-                        loss_t=losses_t_m, top1t=top1_t_m, top5t=top5_t_m))
+                        cil_loss_t=cil_losses_t_m, til_loss_t=til_losses_t_m,
+                        cil_top1t=cil_top1_t_m, cil_top5t=cil_top5_t_m,
+                        til_top1t=til_top1_t_m, til_top5t=til_top5_t_m))
 
     end = time.time()
     last_idx = len(loader) - 1
     with torch.no_grad():
-        for batch_idx, (input, label) in enumerate(loader):
+        for batch_idx, (input, label, _) in enumerate(loader):
             last_batch = batch_idx == last_idx
             if not args.prefetcher:
                 input, label = input.cuda(), label.cuda()
@@ -1022,57 +1040,88 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
                 input = input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
-                output, _ = model(input)
-            if isinstance(output, (tuple, list)):
-                output = output[0]
+                _, cil_output, _ = model(input, task=cil_task)
+                til_output, _, _ = model(input, task=til_task)
+            if isinstance(cil_output, (tuple, list)): cil_output = cil_output[0]
+            if isinstance(til_output, (tuple, list)): til_output = til_output[0]
 
             # augmentation reduction
             reduce_factor = args.tta
             if reduce_factor > 1:
-                output = output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+                cil_output = cil_output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+                til_output = til_output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
                 label = label[0:label.size(0):reduce_factor]
 
-            loss = loss_fn(output, label)
-            acc1, acc5 = utils.accuracy(output, label, topk=(1, 5))
+            loss_cil = loss_fn(cil_output, label)
+            loss_til = loss_fn(til_output, label - (args.num_classes // args.tasks * til_task))
+            cil_acc1, cil_acc5 = utils.accuracy(cil_output, label, topk=(1, 5))
+            til_acc1, til_acc5 = utils.accuracy(til_output, label - (args.num_classes // args.tasks * til_task), topk=(1, 5))
 
             if args.distributed:
-                reduced_loss = utils.reduce_tensor(loss.data, args.world_size)
-                acc1 = utils.reduce_tensor(acc1, args.world_size)
-                acc5 = utils.reduce_tensor(acc5, args.world_size)
+                reduced_loss_cil = utils.reduce_tensor(loss_cil.data, args.world_size)
+                cil_acc1 = utils.reduce_tensor(cil_acc1, args.world_size)
+                cil_acc5 = utils.reduce_tensor(cil_acc5, args.world_size)
             else:
-                reduced_loss = loss.data
+                reduced_loss_cil = loss_cil.data
+
+            cil_losses_s_m.update(reduced_loss_cil.item(), input.size(0))
+            cil_top1_s_m.update(cil_acc1.item(), cil_output.size(0))
+            cil_top5_s_m.update(cil_acc5.item(), cil_output.size(0))
+
+            if args.distributed:
+                reduced_loss_til = utils.reduce_tensor(loss_til.data, args.world_size)
+                til_acc1 = utils.reduce_tensor(til_acc1, args.world_size)
+                til_acc5 = utils.reduce_tensor(til_acc5, args.world_size)
+            else:
+                reduced_loss_til = loss_til.data
 
             torch.cuda.synchronize()
 
-            losses_s_m.update(reduced_loss.item(), input.size(0))
-            top1_s_m.update(acc1.item(), output.size(0))
-            top5_s_m.update(acc5.item(), output.size(0))
+            til_losses_s_m.update(reduced_loss_til.item(), input.size(0))
+            til_top1_s_m.update(til_acc1.item(), til_output.size(0))
+            til_top5_s_m.update(til_acc5.item(), til_output.size(0))
 
             batch_time_m.update(time.time() - end)
             end = time.time()
             if last_batch or batch_idx % args.log_interval == 0:
-                log_name = 'TestS' + log_suffix
+                log_name = f'TestS {til_task}'  + log_suffix
                 _logger.info(
                     '{0}: [{1:>4d}/{2} ({3:>3.0f}%)]  '
                     'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
-                    'Loss_s: {loss_s.avg:>6.4f}  '
-                    'Acc_s@1: {top1s.avg:>7.4f}  '
-                    'Acc_s@5: {top5s.avg:>7.4f}  '
-                    'Loss_t: {loss_t.avg:>6.4f}  '
-                    'Acc_t@1: {top1t.avg:>7.4f}  '
-                    'Acc_t@5: {top5t.avg:>7.4f}'.format(
+                    'CIL_Loss_s: {cil_loss_s.avg:>6.4f}  '
+                    'CIL_Acc_s@1: {cil_top1s.avg:>7.4f}  '
+                    'CIL_Acc_s@5: {cil_top5s.avg:>7.4f}  '
+                    'TIL_Loss_s: {til_loss_s.avg:>6.4f}  '
+                    'TIL_Acc_s@1: {til_top1s.avg:>7.4f}  '
+                    'TIL_Acc_s@5: {til_top5s.avg:>7.4f}  '
+                    'CIL_Loss_t: {cil_loss_t.avg:>6.4f}  '
+                    'CIL_Acc_t@1: {cil_top1t.avg:>7.4f}  '
+                    'CIL_Acc_t@5: {cil_top5t.avg:>7.4f}  '
+                    'TIL_Loss_t: {til_loss_t.avg:>6.4f}  '
+                    'TIL_Acc_t@1: {til_top1t.avg:>7.4f}  '
+                    'TIL_Acc_t@5: {til_top5t.avg:>7.4f}'.format(
                         log_name, batch_idx, last_idx, 100. * batch_idx / last_idx,
                         batch_time=batch_time_m,
-                        loss_s=losses_s_m, loss_t=losses_t_m,
-                        top1s=top1_s_m, top5s=top5_s_m,
-                        top1t=top1_t_m, top5t=top5_t_m))
+                        cil_loss_s=cil_losses_s_m, cil_loss_t=cil_losses_t_m,
+                        til_loss_s=til_losses_s_m, til_loss_t=til_losses_t_m,
+                        cil_top1s=cil_top1_s_m, cil_top5s=cil_top5_s_m,
+                        cil_top1t=cil_top1_t_m, cil_top5t=cil_top5_t_m,
+                        til_top1s=til_top1_s_m, til_top5s=til_top5_s_m,
+                        til_top1t=til_top1_t_m, til_top5t=til_top5_t_m))
 
-    metrics = OrderedDict([('loss_s', losses_s_m.avg),
-                           ('loss_t', losses_t_m.avg),
-                           ('top1_s', top1_s_m.avg),
-                           ('top5_s', top5_s_m.avg),
-                           ('top1_t', top1_t_m.avg),
-                           ('top5_t', top5_t_m.avg)])
+    metrics = OrderedDict([('task', cil_task),
+            	           ('cil_loss_s', cil_losses_s_m.avg),
+                           ('cil_loss_t', cil_losses_t_m.avg),
+                           ('til_loss_s', til_losses_s_m.avg),
+                           ('til_loss_t', til_losses_t_m.avg),
+                           ('cil_top1_s', cil_top1_s_m.avg),
+                           ('cil_top5_s', cil_top5_s_m.avg),
+                           ('cil_top1_t', cil_top1_t_m.avg),
+                           ('cil_top5_t', cil_top5_t_m.avg),
+                           ('til_top1_s', til_top1_s_m.avg),
+                           ('til_top5_s', til_top5_s_m.avg),
+                           ('til_top1_t', til_top1_t_m.avg),
+                           ('til_top5_t', til_top5_t_m.avg)])
 
     return metrics
 

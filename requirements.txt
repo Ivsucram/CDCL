@@ -6,3 +6,4 @@ apex
 wandb
 functorch
 fastai
+avalanche-lib

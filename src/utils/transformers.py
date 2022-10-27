@@ -49,6 +49,7 @@ class AttentionCrossAttention(Attention):
                  projection_dropout=0.0,
                  tasks=1):
         super(AttentionCrossAttention, self).__init__(dim, num_heads, attention_dropout, projection_dropout)
+        assert tasks > 0, 'The number of tasks should be greater than zero'
         if qk_scale is not None:
             self.scale = qk_scale
 
@@ -56,15 +57,15 @@ class AttentionCrossAttention(Attention):
 
         self.k = [None] * self.n_tasks
         for i in range(self.n_tasks):
-            self.k[i] = Linear(dim, dim, bias=True).cuda()
+            self.k[i] = Linear(dim, dim, bias=True).cuda() # FIXME: Remvoe this cuda() call
 
-        self.qkv = Linear(dim, dim * 2, bias=qkv_bias)
+        self.qv = Linear(dim, dim * 2, bias=qkv_bias)
         self.attn = None
 
     def forward(self, x, x2 = None, use_attn=True, task=0):
         B, N, C = x.shape
         if x2 is None:
-            qkv = self.qkv(x).reshape(B, N, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+            qkv = self.qv(x).reshape(B, N, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
             k = self.k[task](x).reshape(B, N, 1, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
             q, v = qkv[0], qkv[1]
 
@@ -80,11 +81,11 @@ class AttentionCrossAttention(Attention):
             x = self.proj_drop(x)
             return x
         else:
-            qkv = self.qkv(x).reshape(B, N, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+            qkv = self.qv(x).reshape(B, N, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
             k = self.k[task](x).reshape(B, N, 1, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
             q, v = qkv[0], qkv[1]
 
-            qkv2 = self.qkv(x2).reshape(B, N, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+            qkv2 = self.qv(x2).reshape(B, N, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
             k2 = self.k[task](x2).reshape(B, N, 1, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
             q2, v2 = qkv2[0], qkv2[1]
 
@@ -127,10 +128,12 @@ class TransformerCrossEncoderLayer(Module):
                  dim_feedforward=2048,
                  dropout=0.0,
                  attention_dropout=0.0,
-                 drop_path_rate=0.0):
+                 drop_path_rate=0.0,
+                 tasks=1):
         super().__init__()
+        assert tasks > 0, 'The number of tasks should be greater than zero'
         self.pre_norm = LayerNorm(dim)
-        self.self_attn = AttentionCrossAttention(dim, num_heads=num_heads, attention_dropout=attention_dropout, projection_dropout=drop_path_rate)
+        self.self_attn = AttentionCrossAttention(dim, num_heads=num_heads, attention_dropout=attention_dropout, projection_dropout=drop_path_rate, tasks=tasks)
 
         self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0. else Identity()
         self.norm1 = LayerNorm(dim)
@@ -139,8 +142,6 @@ class TransformerCrossEncoderLayer(Module):
         self.dropout1 = Dropout(dropout)
         self.linear2 = Linear(dim_feedforward, dim)
         self.dropout2 = Dropout(dropout)
-
-        # self.conv_one = Conv1d(in_channels=dim*2,out_channels=dim*2,kernel_size=1)
 
         self.activation = F.gelu
 
@@ -187,8 +188,11 @@ class TransformerClassifier(Module):
                  stochastic_depth=0.1,
                  positional_embedding='learnable',
                  sequence_length=None,
-                 use_attention=True):
+                 use_attention=True,
+                 tasks=1):
         super().__init__()
+        assert tasks > 0, 'The number of tasks should be greater than zero'
+
         positional_embedding = positional_embedding if \
             positional_embedding in ['sine', 'learnable', 'none'] else 'sine'
         dim_feedforward = int(embedding_dim * mlp_ratio)
@@ -226,15 +230,20 @@ class TransformerClassifier(Module):
         self.blocks = ModuleList([
             TransformerCrossEncoderLayer(dim=embedding_dim, num_heads=num_heads,
                                      dim_feedforward=dim_feedforward, dropout=dropout,
-                                     attention_dropout=attention_dropout, drop_path_rate=dpr[i]
+                                     attention_dropout=attention_dropout, drop_path_rate=dpr[i],
+                                     tasks=tasks
             )
             for i in range(num_layers)])
         self.norm = LayerNorm(embedding_dim)
 
-        self.fc = Linear(embedding_dim, num_classes)
+        self.fc_a = Linear(embedding_dim, num_classes)
+        
+        self.fc_i = [None] * tasks
+        for i in range(tasks):
+            self.fc_i[i] = Linear(embedding_dim, num_classes // tasks).cuda()
         self.apply(self.init_weight)
 
-    def forward(self, x, x2=None, x_x2_fusion=None):
+    def forward(self, x, x2=None, x_x2_fusion=None, task=0):
         if self.positional_emb is None and x.size(1) < self.sequence_length:
             x = F.pad(x, (0, 0, 0, self.n_channels - x.size(1)), mode='constant', value=0)
 
@@ -275,10 +284,10 @@ class TransformerClassifier(Module):
             x2 = self.norm(x2)
             x_x2_fusion = self.norm(x_x2_fusion)
 
-            return self.out(x, x2, x_x2_fusion)
-        return self.out(x)
+            return self.out(x, x2, x_x2_fusion, task=task)
+        return self.out(x, task=task)
 
-    def out(self, x, x2=None, x_x2_fusion=None):
+    def out(self, x, x2=None, x_x2_fusion=None, task=0):
         if self.seq_pool:
             x_ = torch.matmul(F.softmax(self.attention_pool(x), dim=1).transpose(-1, -2), x).squeeze(-2)
         else:
@@ -292,11 +301,12 @@ class TransformerClassifier(Module):
                 x2_ = x2[:, 0]
                 x_x2_fusion_ = x_x2_fusion[:, 0]
 
-            return ((self.fc(x_), self.fc(x2_), self.fc(x_x2_fusion_)), 
+            return ((self.fc_i[task](x_), self.fc_i[task](x2_), self.fc_i[task](x_x2_fusion_)), 
+                    (self.fc_a(x_), self.fc_a(x2_), self.fc_a(x_x2_fusion_)), 
                     (x_, x2_, x_x2_fusion_), 
                     (x, x2, x_x2_fusion))
             
-        return (self.fc(x_)), (x_), (x)
+        return (self.fc_i[task](x_)), (self.fc_a(x_)), (x_), (x)
 
     @staticmethod
     def init_weight(m):
