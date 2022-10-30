@@ -379,7 +379,7 @@ def _parse_args(config_path=None):
 def main():
     utils.setup_default_logging()
     #args, args_text = _parse_args()
-    args, args_text = _parse_args(config_path='configs/datasets/usps_mnist.yml')
+    args, args_text = _parse_args(config_path='configs/datasets/office31_dslr_webcam.yml')
 
     args.prefetcher = False
     args.distributed = False

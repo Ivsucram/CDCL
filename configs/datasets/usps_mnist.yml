@@ -23,7 +23,7 @@ lr: 5e-5
 min_lr: 1e-6
 sched: cosine
 epochs: 50
-cooldown_epochs: 10
+cooldown_epochs: 25
 warmup_epochs: 25
 warmup_lr: 1e-5
 opt: adamw

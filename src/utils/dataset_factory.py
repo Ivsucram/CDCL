@@ -48,6 +48,42 @@ def create_dataset(name, is_training, args, force_unique_tasks=False):
             ds = torchvision.datasets.ImageFolder('./data/visda/validation')
             ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
                               fixed_class_order=range(0, 12), train_transform=transforms, eval_transform=transforms)
+    elif name == 'office31_amazon':
+        if not os.path.isdir('./data/office31'):
+            os.mkdir('./data/office31')
+        if not (os.path.isdir('./data/office31/amazon') or os.path.isdir('./data/office31/dslr') or os.path.isdir('./data/office31/webcam')):
+            download_and_extract_archive(url='https://drive.google.com/file/d/0B4IapRTv9pJ1WGZVd1VDMmhwdlE/view',
+                    download_root='./data/office31',
+                    extract_root='./data/office31',
+                    filename='domain_adaptation_images.tar.gz'
+            )
+        ds = torchvision.datasets.ImageFolder('./data/office31/amazon/images')
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 30), train_transform=transforms, eval_transform=transforms)
+    elif name == 'office31_dslr':
+        if not os.path.isdir('./data/office31'):
+            os.mkdir('./data/office31')
+        if not (os.path.isdir('./data/office31/amazon') or os.path.isdir('./data/office31/dslr') or os.path.isdir('./data/office31/webcam')):
+            download_and_extract_archive(url='https://drive.google.com/file/d/0B4IapRTv9pJ1WGZVd1VDMmhwdlE/view',
+                    download_root='./data/office31',
+                    extract_root='./data/office31',
+                    filename='domain_adaptation_images.tar.gz'
+            )
+        ds = torchvision.datasets.ImageFolder('./data/office31/dslr/images')
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 30), train_transform=transforms, eval_transform=transforms)
+    elif name == 'office31_webcam':
+        if not os.path.isdir('./data/office31'):
+            os.mkdir('./data/office31')
+        if not (os.path.isdir('./data/office31/amazon') or os.path.isdir('./data/office31/dslr') or os.path.isdir('./data/office31/webcam')):
+            download_and_extract_archive(url='https://drive.google.com/file/d/0B4IapRTv9pJ1WGZVd1VDMmhwdlE/view',
+                    download_root='./data/office31',
+                    extract_root='./data/office31',
+                    filename='domain_adaptation_images.tar.gz'
+            )
+        ds = torchvision.datasets.ImageFolder('./data/office31/dslr/images')
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 30), train_transform=transforms, eval_transform=transforms)
     elif name == 'cifar10':
         ds = torchvision.datasets.CIFAR10('./data/cifar10', train=is_training, download=True)
     elif name == 'cifar100':
