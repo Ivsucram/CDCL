@@ -28,6 +28,12 @@ def get_outdir(path, *paths, inc=False):
 
 def update_summary(epoch, train_metrics, eval_metrics, filename, write_header=False, log_wandb=False, train_task=0, test_task=0):
     rowd = OrderedDict(epoch=epoch)
+    rowd.update([(f'train_test_{test_task}_' + k, v) for k, v in train_metrics.items()])
+    rowd.update([(f'eval_test_{test_task}_' + k, v) for k, v in eval_metrics.items()])
+    rowd.update([(f'train_train_{train_task}_' + k, v) for k, v in train_metrics.items()])
+    rowd.update([(f'eval_train_{train_task}_' + k, v) for k, v in eval_metrics.items()])
+    rowd.update([(f'train_' + k, v) for k, v in train_metrics.items()])
+    rowd.update([(f'eval_' + k, v) for k, v in eval_metrics.items()])
     rowd.update([(f'train_{train_task}_{test_task}_' + k, v) for k, v in train_metrics.items()])
     rowd.update([(f'eval_{train_task}_{test_task}' + k, v) for k, v in eval_metrics.items()])
     if log_wandb:

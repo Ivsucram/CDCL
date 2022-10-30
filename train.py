@@ -351,12 +351,18 @@ group.add_argument('--log-wandb', action='store_true', default=False,
 group.add_argument('--device_id', type=int, default=0, metavar='N', 
                     help='If you have multiples GPU, select which single GPU will run this code (default: 0)')
 
-
-
-group.add_argument('--no_distil', action='store_true', default=False,
-                    help='Disable CLCD distil loss')
-group.add_argument('--source-center-aware', action='store_true', default=False,
-                    help='Enable the center aware pseudo model to use source data centroids')
+group.add_argument('--alpha-1', type=float, default=1., metavar='N',
+                   help='Loss_s coefficient (default 1.0)')
+group.add_argument('--alpha-2', type=float, default=1., metavar='N',
+                   help='Loss_t coefficient (default 1.0)')
+group.add_argument('--alpha-3', type=float, default=1., metavar='N',
+                   help='Loss_d coefficient (default 1.0)')
+group.add_argument('--alpha-4', type=float, default=0., metavar='N',
+                   help='Loss_s coefficient (default 0.0)')
+group.add_argument('--alpha-5', type=float, default=1., metavar='N',
+                   help='Loss_i coefficient (default 1.0)')
+group.add_argument('--alpha-6', type=float, default=1., metavar='N',
+                   help='Loss_r coefficient (default 1.0)')
 
 
 def _parse_args(config_path=None):
@@ -378,8 +384,8 @@ def _parse_args(config_path=None):
 
 def main():
     utils.setup_default_logging()
-    #args, args_text = _parse_args()
-    args, args_text = _parse_args(config_path='configs/datasets/domainnet_real_sketch.yml')
+    args, args_text = _parse_args()
+    # args, args_text = _parse_args(config_path='configs/datasets/usps_mnist.yml') # Used during development
 
     args.prefetcher = False
     args.distributed = False
@@ -867,9 +873,9 @@ def train_one_epoch(
 
         if task > 0 or epoch >= args.epochs:
             with amp_autocast():
-                # if task > 0:
-                #     loss_a += torch.norm(torch.gradient(previous_k_w, dim=0)[0].mean(0).unsqueeze(0) * loss_i * (k_w - previous_k_w), p=1)
-                #     loss_a += torch.norm(torch.gradient(previous_k_b, dim=0)[0].mean(0).unsqueeze(0) * loss_i * (k_b - previous_k_b), p=1)
+                if task > 0:
+                    loss_a += torch.norm(torch.gradient(previous_k_w, dim=0)[0].mean(0).unsqueeze(0) * loss_i * (k_w - previous_k_w), p=1)
+                    loss_a += torch.norm(torch.gradient(previous_k_b, dim=0)[0].mean(0).unsqueeze(0) * loss_i * (k_b - previous_k_b), p=1)
 
                 try:
                     (source_memory, target_memory, label_memory, _, _, acc_source_logit, acc_target_logit) = next(dataloader_memory_iterator)
@@ -890,7 +896,7 @@ def train_one_epoch(
                 loss_r += loss_cross_entropy_fn(acc_memory_output_target, label_memory)
                 loss_r += loss_distil_fn(acc_memory_output_target, acc_memory_output_fusion)
 
-        alpha_1, alpha_2, alpha_3, alpha_4, alpha_5, alpha_6 = 1., 1., 1., 1., 1., 1.
+        alpha_1, alpha_2, alpha_3, alpha_4, alpha_5, alpha_6 = args.alpha_1, args.alpha_2, args.alpha_3, args.alpha_4, args.alpha_5, args.alpha_6
         loss = alpha_1 * loss_s + alpha_2 * loss_t + alpha_3 * loss_d + alpha_4 * loss_a + alpha_5 * loss_i + alpha_6 * loss_r
 
         optimizer.zero_grad()

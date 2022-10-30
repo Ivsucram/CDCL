@@ -19,7 +19,5 @@ warmup_epochs: 25
 warmup_lr: 1e-5
 opt: adamw
 workers: 2
-pretrained: False
 tasks: 4
 memory_size: 1000
-log_wandb: False

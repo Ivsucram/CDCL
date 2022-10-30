@@ -29,4 +29,3 @@ opt: adamw
 workers: 2
 tasks: 5
 memory_size: 1000
-log_wandb: False
