@@ -5,8 +5,10 @@ import tqdm
 
 class CenterAwarePseudoModule(torch.nn.Module):
 
-    def __init__(self, model, loader_target, loader=None, distance='cosine', threshold=0., task=0):
+    def __init__(self, model, loader_target, loader=None, distance='cosine', threshold=0., task=0, args=None):
         super(CenterAwarePseudoModule, self).__init__()
+
+        self.args = args
 
         model.eval()
         
@@ -15,7 +17,7 @@ class CenterAwarePseudoModule(torch.nn.Module):
             if loader is None:
                 for n_iter, (input, _, _) in enumerate(tqdm.tqdm(loader_target)):
                     input = input.cuda()
-                    injection_outputs, accumulator_outputs, feas = model(input, task=task)
+                    injection_outputs, accumulator_outputs, feas, _, _ = model(input, task=task)
 
                     if n_iter == 0:
                         all_fea = torch.zeros(len(loader_target.dataset), feas.flatten(1).size(1))
@@ -30,7 +32,7 @@ class CenterAwarePseudoModule(torch.nn.Module):
             else:
                 for n_iter, (input, _, _) in enumerate(tqdm.tqdm(loader)):
                     input = input.cuda()
-                    injection_outputs, accumulator_outputs, feas = model(input, return_features=True, task=task)
+                    injection_outputs, accumulator_outputs, feas, _, _ = model(input, return_features=True, task=task)
 
                     if n_iter == 0:
                         all_fea = torch.zeros(len(loader_target.dataset) + len(loader.dataset), feas.flatten(1).size(1))
@@ -45,7 +47,7 @@ class CenterAwarePseudoModule(torch.nn.Module):
 
                 for _, (input, _, _) in enumerate(tqdm.tqdm(loader_target)):
                     input = input.cuda()
-                    injection_outputs, accumulator_outputs, feas = model(input, return_features=True, task=task)
+                    injection_outputs, accumulator_outputs, feas, _, _ = model(input, return_features=True, task=task)
 
                     for _, (injection_output, accumulator_output, fea) in enumerate(zip(injection_outputs, accumulator_outputs, feas)):
                         all_fea[counter] = fea.flatten().detach().clone().float().cpu()
@@ -89,7 +91,7 @@ class CenterAwarePseudoModule(torch.nn.Module):
     def forward(self, model, x, distance='cosine', task=0):
         model.eval()
         with torch.no_grad():
-            _, _, all_fea = model(x, task=task)
+            _, _, all_fea, _, _ = model(x, task=task)
             all_fea = all_fea.flatten(1)
             if distance == 'cosine':
                 all_fea = torch.cat((all_fea, torch.ones(all_fea.size(0), 1).cuda()), 1)
@@ -120,8 +122,8 @@ class CenterAwarePseudoModule(torch.nn.Module):
             elif x_s.size(0) < x_t.size(0):
                 cx_s, cy_s = cycle(x_s), cycle(y_s)
 
-            _, _, feat_s = model(x_s, task=task)
-            _, _, feat_t = model(x_t, task=task)
+            _, _, feat_s, _, _ = model(x_s, task=task)
+            _, _, feat_t, _, _ = model(x_t, task=task)
             distmat = torch.cdist(feat_s, feat_t)
 
             injection_pairs, accumulator_pairs = [], []
@@ -161,8 +163,8 @@ class CenterAwarePseudoModule(torch.nn.Module):
         with torch.no_grad():
             _, C, H, W = x_s.size()
 
-            _, _, feat_s = model(x_s, task=task)
-            _, _, feat_t = model(x_t, task=task)
+            _, _, feat_s, _, _ = model(x_s, task=task)
+            _, _, feat_t, _, _ = model(x_t, task=task)
 
             sim_mat = torch.matmul(feat_s, feat_t.T)
             _, knn_idx = torch.max(sim_mat, 1)
@@ -192,7 +194,7 @@ class CenterAwarePseudoModule(torch.nn.Module):
                 if cur_idx < 0: continue
                 xs = x_s[cur_idx]
                 ys = y_s[cur_idx]
-                if ys == yt:
+                if ys - (self.args.num_classes // self.args.tasks * task) == yt:
                     injection_pairs.append((xs, xt, ys))
 
             for idx, (xs, ys) in enumerate(zip(x_s, y_s)):
@@ -200,7 +202,7 @@ class CenterAwarePseudoModule(torch.nn.Module):
                 if cur_idx < 0: continue
                 xt = x_t[cur_idx]
                 yt = iy_t[cur_idx]
-                if ys == yt:
+                if ys - (self.args.num_classes // self.args.tasks * task) == yt:
                     injection_pairs.append((xs, xt, ys))
 
             acc_s, acc_t, acc_y = [None] * len(accumulator_pairs), [None] * len(accumulator_pairs), [None] * len(accumulator_pairs)

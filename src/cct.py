@@ -10,27 +10,7 @@ try:
 except ImportError:
     from .registry import register_model
 
-model_urls = {
-    'cct_7_3x1_32':
-        'https://shi-labs.com/projects/cct/checkpoints/pretrained/cct_7_3x1_32_cifar10_300epochs.pth',
-    'cct_7_3x1_32_sine':
-        'https://shi-labs.com/projects/cct/checkpoints/pretrained/cct_7_3x1_32_sine_cifar10_5000epochs.pth',
-    'cct_7_3x1_32_c100':
-        'https://shi-labs.com/projects/cct/checkpoints/pretrained/cct_7_3x1_32_cifar100_300epochs.pth',
-    'cct_7_3x1_32_sine_c100':
-        'https://shi-labs.com/projects/cct/checkpoints/pretrained/cct_7_3x1_32_sine_cifar100_5000epochs.pth',
-    'cct_7_7x2_224_sine':
-        'https://shi-labs.com/projects/cct/checkpoints/pretrained/cct_7_7x2_224_flowers102.pth',
-    'cct_14_7x2_224':
-        'https://shi-labs.com/projects/cct/checkpoints/pretrained/cct_14_7x2_224_imagenet.pth',
-    'cct_14_7x2_384':
-        'https://shi-labs.com/projects/cct/checkpoints/finetuned/cct_14_7x2_384_imagenet.pth',
-    'cct_14_7x2_384_fl':
-        'https://shi-labs.com/projects/cct/checkpoints/finetuned/cct_14_7x2_384_flowers102.pth',
-}
-
-
-class CCT(nn.Module):
+class CLCD(nn.Module):
     def __init__(self,
                  img_size=224,
                  embedding_dim=768,
@@ -52,7 +32,7 @@ class CCT(nn.Module):
                  positional_embedding='learnable',
                  tasks=1,
                  *args, **kwargs):
-        super(CCT, self).__init__()
+        super(CLCD, self).__init__()
 
         self.tokenizer = Tokenizer(n_input_channels=n_input_channels,
                                    n_output_channels=embedding_dim,
@@ -90,21 +70,21 @@ class CCT(nn.Module):
 
         if x2 is not None:
             x2 = self.tokenizer(x2)
-            (ix, ix2, ix_x2), (ax, ax2, ax_x2), (feat_x, feat_x2, feat_x_x2), (attn_x, attn_x2, attn_x_x2) = self.classifier(x, x2, task=task)
-            return (ix, ix2, ix_x2), (ax, ax2, ax_x2), (feat_x, feat_x2, feat_x_x2)
+            (ix, ix2, ix_x2), (ax, ax2, ax_x2), (feat_x, feat_x2, feat_x_x2), (attn_x, attn_x2, attn_x_x2), (pkw, pkb), (kw, kb) = self.classifier(x, x2, task=task)
+            return (ix, ix2, ix_x2), (ax, ax2, ax_x2), (feat_x, feat_x2, feat_x_x2), (pkw, pkb), (kw, kb)
 
-        (ix), (ax), (feat_x), (attn_x) = self.classifier(x)
-        return (ix), (ax), feat_x
+        (ix), (ax), (feat_x), (attn_x), (pkw, pkb), (kw, kb)  = self.classifier(x, task=task)
+        return (ix), (ax), (feat_x), (pkw, pkb), (kw, kb)
 
 
-def _cct(arch, pretrained, progress,
+def _clcd(arch, pretrained, progress,
          num_layers, num_heads, mlp_ratio, embedding_dim,
          n_input_channels=3, kernel_size=3, stride=None, padding=None,
          positional_embedding='learnable',
          *args, **kwargs):
     stride = stride if stride is not None else max(1, (kernel_size // 2) - 1)
     padding = padding if padding is not None else max(1, (kernel_size // 2))
-    model = CCT(n_input_channels=n_input_channels,
+    model = CLCD(n_input_channels=n_input_channels,
                 num_layers=num_layers,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
@@ -115,259 +95,35 @@ def _cct(arch, pretrained, progress,
                 tasks=kwargs['args'].tasks,
                 *args, **kwargs)
 
-    if pretrained:
-        if arch in model_urls:
-            state_dict = load_state_dict_from_url(model_urls[arch], progress=progress)
-            if positional_embedding == 'learnable':
-                state_dict = pe_check(model, state_dict)
-            elif positional_embedding == 'sine':
-                state_dict['classifier.positional_emb'] = model.state_dict()['classifier.positional_emb']
-            state_dict = fc_check(model, state_dict)
-            model.load_state_dict(state_dict)
-        else:
-            raise RuntimeError(f'Variant {arch} does not yet have pretrained weights.')
     return model
 
 
-# def cct_2(arch, pretrained, progress, *args, **kwargs):
-#     return _cct(arch, pretrained, progress, num_layers=2, num_heads=2, mlp_ratio=1, embedding_dim=128,
-#                 *args, **kwargs)
-
-
-# def cct_4(arch, pretrained, progress, *args, **kwargs):
-#     return _cct(arch, pretrained, progress, num_layers=4, num_heads=2, mlp_ratio=1, embedding_dim=128,
-#                 *args, **kwargs)
-
-
-# def cct_6(arch, pretrained, progress, *args, **kwargs):
-#     return _cct(arch, pretrained, progress, num_layers=6, num_heads=4, mlp_ratio=2, embedding_dim=256,
-#                 *args, **kwargs)
-
-
-def cct_7(arch, pretrained, progress, *args, **kwargs):
-    return _cct(arch, pretrained, progress, num_layers=7, num_heads=4, mlp_ratio=2, embedding_dim=256,
+def clcd_7(arch, pretrained, progress, *args, **kwargs):
+    return _clcd(arch, pretrained, progress, num_layers=7, num_heads=4, mlp_ratio=2, embedding_dim=256,
                 *args, **kwargs)
 
 
-def cct_14(arch, pretrained, progress, *args, **kwargs):
-    return _cct(arch, pretrained, progress, num_layers=14, num_heads=6, mlp_ratio=3, embedding_dim=384,
+def clcd_14(arch, pretrained, progress, *args, **kwargs):
+    return _clcd(arch, pretrained, progress, num_layers=14, num_heads=6, mlp_ratio=3, embedding_dim=384,
                 *args, **kwargs)
 
-
-# @register_model
-# def cct_2_3x2_32(pretrained=False, progress=False,
-#                  img_size=32, positional_embedding='learnable', num_classes=10,
-#                  *args, **kwargs):
-#     return cct_2('cct_2_3x2_32', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=2,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_2_3x2_32_sine(pretrained=False, progress=False,
-#                       img_size=32, positional_embedding='sine', num_classes=10,
-#                       *args, **kwargs):
-#     return cct_2('cct_2_3x2_32_sine', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=2,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_4_3x2_32(pretrained=False, progress=False,
-#                  img_size=32, positional_embedding='learnable', num_classes=10,
-#                  *args, **kwargs):
-#     return cct_4('cct_4_3x2_32', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=2,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_4_3x2_32_sine(pretrained=False, progress=False,
-#                       img_size=32, positional_embedding='sine', num_classes=10,
-#                       *args, **kwargs):
-#     return cct_4('cct_4_3x2_32_sine', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=2,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_6_3x1_32(pretrained=False, progress=False,
-#                  img_size=32, positional_embedding='learnable', num_classes=10,
-#                  *args, **kwargs):
-#     return cct_6('cct_6_3x1_32', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=1,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_6_3x1_32_sine(pretrained=False, progress=False,
-#                       img_size=32, positional_embedding='sine', num_classes=10,
-#                       *args, **kwargs):
-#     return cct_6('cct_6_3x1_32_sine', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=1,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_6_3x2_32(pretrained=False, progress=False,
-#                  img_size=32, positional_embedding='learnable', num_classes=10,
-#                  *args, **kwargs):
-#     return cct_6('cct_6_3x2_32', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=2,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_6_3x2_32_sine(pretrained=False, progress=False,
-#                       img_size=32, positional_embedding='sine', num_classes=10,
-#                       *args, **kwargs):
-#     return cct_6('cct_6_3x2_32_sine', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=2,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_7_3x1_32(pretrained=False, progress=False,
-#                  img_size=32, positional_embedding='learnable', num_classes=10,
-#                  *args, **kwargs):
-#     return cct_7('cct_7_3x1_32', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=1,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_7_3x1_32_sine(pretrained=False, progress=False,
-#                       img_size=32, positional_embedding='sine', num_classes=10,
-#                       *args, **kwargs):
-#     return cct_7('cct_7_3x1_32_sine', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=1,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_7_3x1_32_c100(pretrained=False, progress=False,
-#                       img_size=32, positional_embedding='learnable', num_classes=100,
-#                       *args, **kwargs):
-#     return cct_7('cct_7_3x1_32_c100', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=1,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_7_3x1_32_sine_c100(pretrained=False, progress=False,
-#                            img_size=32, positional_embedding='sine', num_classes=100,
-#                            *args, **kwargs):
-#     return cct_7('cct_7_3x1_32_sine_c100', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=1,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_7_3x2_32(pretrained=False, progress=False,
-#                  img_size=32, positional_embedding='learnable', num_classes=10,
-#                  *args, **kwargs):
-#     return cct_7('cct_7_3x2_32', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=2,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_7_3x2_32_sine(pretrained=False, progress=False,
-#                       img_size=32, positional_embedding='sine', num_classes=10,
-#                       *args, **kwargs):
-#     return cct_7('cct_7_3x2_32_sine', pretrained, progress,
-#                  kernel_size=3, n_conv_layers=2,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
-# @register_model
-# def cct_7_7x2_224(pretrained=False, progress=False,
-#                   img_size=224, positional_embedding='learnable', num_classes=102,
-#                   *args, **kwargs):
-#     return cct_7('cct_7_7x2_224', pretrained, progress,
-#                  kernel_size=7, n_conv_layers=2,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
 
 @register_model
-def cct_7_7x2_28(pretrained=False, progress=False,
+def clcd_7_7x2_28(pretrained=False, progress=False,
                   img_size=28, positional_embedding='learnable', num_classes=102,
                   *args, **kwargs):
-    return cct_7('cct_7_7x2_28', pretrained, progress,
+    return clcd_7('clcd_7_7x2_28', pretrained, progress,
                  n_input_channels=1, kernel_size=7, n_conv_layers=2,
                  img_size=img_size, positional_embedding=positional_embedding,
                  num_classes=num_classes,
                  *args, **kwargs)
 
-
-# @register_model
-# def cct_7_7x2_224_sine(pretrained=False, progress=False,
-#                        img_size=224, positional_embedding='sine', num_classes=102,
-#                        *args, **kwargs):
-#     return cct_7('cct_7_7x2_224_sine', pretrained, progress,
-#                  kernel_size=7, n_conv_layers=2,
-#                  img_size=img_size, positional_embedding=positional_embedding,
-#                  num_classes=num_classes,
-#                  *args, **kwargs)
-
-
 @register_model
-def cct_14_7x2_224(pretrained=False, progress=False,
+def clcd_14_7x2_224(pretrained=False, progress=False,
                    img_size=224, positional_embedding='learnable', num_classes=1000,
                    *args, **kwargs):
-    return cct_14('cct_14_7x2_224', pretrained, progress,
+    return clcd_14('clcd_14_7x2_224', pretrained, progress,
                   kernel_size=7, n_conv_layers=2,
                   img_size=img_size, positional_embedding=positional_embedding,
                   num_classes=num_classes,
                   *args, **kwargs)
-
-
-# @register_model
-# def cct_14_7x2_384(pretrained=False, progress=False,
-#                    img_size=384, positional_embedding='learnable', num_classes=1000,
-#                    *args, **kwargs):
-#     return cct_14('cct_14_7x2_384', pretrained, progress,
-#                   kernel_size=7, n_conv_layers=2,
-#                   img_size=img_size, positional_embedding=positional_embedding,
-#                   num_classes=num_classes,
-#                   *args, **kwargs)
-
-
-# @register_model
-# def cct_14_7x2_384_fl(pretrained=False, progress=False,
-#                       img_size=384, positional_embedding='learnable', num_classes=102,
-#                       *args, **kwargs):
-#     return cct_14('cct_14_7x2_384_fl', pretrained, progress,
-#                   kernel_size=7, n_conv_layers=2,
-#                   img_size=img_size, positional_embedding=positional_embedding,
-#                   num_classes=num_classes,
-#                   *args, **kwargs)

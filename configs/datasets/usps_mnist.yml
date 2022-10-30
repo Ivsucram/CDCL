@@ -1,6 +1,6 @@
 dataset_source: usps
 dataset_target: mnist
-model: cct_7_7x2_28
+model: clcd_7_7x2_28
 chans: 1
 num_classes: 10
 img_size: 28
@@ -17,6 +17,7 @@ train_interpolation: random
 amp: True
 source_batch_size: 64
 target_batch_size: 64
+memory_batch_size: 64
 validation_batch_size: 128
 lr: 5e-5
 min_lr: 1e-6
@@ -29,4 +30,4 @@ opt: adamw
 workers: 2
 tasks: 5
 memory_size: 1000
-log_wandb: False
+log_wandb: True

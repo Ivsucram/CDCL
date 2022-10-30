@@ -42,6 +42,16 @@ class RehearsalMemoryManager(torch.nn.Module):
         self.counter = self.counter + [0]
 
     def add_sample(self, source, target, label, injection_source_logit, injection_target_logit, accumulator_source_logit, accumulator_target_logit, task=0):
+        while (task >= self.n_tasks):
+            self.increment_task()
+
+        mask = torch.zeros(self.args.num_classes).cuda()
+        for i in range(mask.size(0)):
+            if i < (self.args.num_classes // self.args.tasks * (task + 1)):            
+                mask[i] = 1
+
+        accumulator_source_logit, accumulator_target_logit = accumulator_source_logit * torch.transpose(mask, 0, 0), accumulator_target_logit * torch.transpose(mask, 0, 0)
+
         if self.counter[task] >= self.memory_size_per_task:
             sort_indeces = self.injection_source_logits[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task].max(1)[0].sort()[1]
 
@@ -79,25 +89,57 @@ class RehearsalMemoryManager(torch.nn.Module):
             self.accumulator_target_logits[self.memory_size_per_task * task + self.counter[task]] = accumulator_target_logit.clone().detach().cpu()
             self.counter[task] += 1
 
-    def dataset_loader(self, task=0):
-        loader = torch.utils.data.DataLoader(CustomRehearsalDataset(self.source_memory[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task],
-                                                                    self.target_memory[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task],
-                                                                    self.label_memory[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task],
-                                                                    self.accumulator_source_logits[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task],
-                                                                    self.accumulator_target_logits[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task]),
-                                             batch_size=self.args.source_batch_size,
-                                             shuffle=True)
+    def zero_task(self, task=0):
+        while (task >= self.n_tasks):
+            self.increment_task()
+
+        self.source_memory[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task] = torch.zeros(self.memory_size_per_task, self.args.chans, self.args.img_size, self.args.img_size, requires_grad=False)
+        self.target_memory[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task] = torch.zeros(self.memory_size_per_task, self.args.chans, self.args.img_size, self.args.img_size, requires_grad=False)
+        self.label_memory[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task] = torch.zeros(self.memory_size_per_task, dtype=torch.int64, requires_grad=False)
+        self.injection_source_logits[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task] = torch.zeros(self.memory_size_per_task, self.args.num_classes // self.args.tasks, requires_grad=False)
+        self.injection_target_logits[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task] = torch.zeros(self.memory_size_per_task, self.args.num_classes // self.args.tasks, requires_grad=False)
+        self.accumulator_source_logits[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task] = torch.zeros(self.memory_size_per_task, self.args.num_classes, requires_grad=False)
+        self.accumulator_target_logits[task*self.memory_size_per_task:(task+1)*self.memory_size_per_task] = torch.zeros(self.memory_size_per_task, self.args.num_classes, requires_grad=False)
+        self.counter[task] = 0
+
+
+    def dataset_loader(self, task=0, mix_tasks=False):
+        while (task >= self.n_tasks):
+            self.increment_task()
+
+        if mix_tasks:
+            loader = torch.utils.data.DataLoader(CustomRehearsalDataset(self.source_memory[:task*self.memory_size_per_task+self.counter[task]],
+                                                                        self.target_memory[:task*self.memory_size_per_task+self.counter[task]],
+                                                                        self.label_memory[:task*self.memory_size_per_task+self.counter[task]],
+                                                                        self.injection_source_logits[:task*self.memory_size_per_task+self.counter[task]],
+                                                                        self.injection_target_logits[:task*self.memory_size_per_task+self.counter[task]],
+                                                                        self.accumulator_source_logits[:task*self.memory_size_per_task+self.counter[task]],
+                                                                        self.accumulator_target_logits[:task*self.memory_size_per_task+self.counter[task]]),
+                                                batch_size=self.args.memory_batch_size,
+                                                shuffle=True)
+        else:
+            loader = torch.utils.data.DataLoader(CustomRehearsalDataset(self.source_memory[task*self.memory_size_per_task:task*self.memory_size_per_task+self.counter[task]],
+                                                                        self.target_memory[task*self.memory_size_per_task:task*self.memory_size_per_task+self.counter[task]],
+                                                                        self.label_memory[task*self.memory_size_per_task:task*self.memory_size_per_task+self.counter[task]],
+                                                                        self.injection_source_logits[task*self.memory_size_per_task:task*self.memory_size_per_task+self.counter[task]],
+                                                                        self.injection_target_logits[task*self.memory_size_per_task:task*self.memory_size_per_task+self.counter[task]],
+                                                                        self.accumulator_source_logits[task*self.memory_size_per_task:task*self.memory_size_per_task+self.counter[task]],
+                                                                        self.accumulator_target_logits[task*self.memory_size_per_task:task*self.memory_size_per_task+self.counter[task]]),
+                                                batch_size=self.args.memory_batch_size,
+                                                shuffle=True)
 
         return loader
             
 class CustomRehearsalDataset(torch.utils.data.Dataset):
-    def __init__(self, source, target, label, source_logit, target_logit):
+    def __init__(self, source, target, label, injection_source_logit, injection_target_logit, accumulator_source_logit, accumulator_target_logit):
         super(CustomRehearsalDataset, self).__init__()
         self.source = source
         self.target = target
         self.label = label
-        self.source_logit = source_logit
-        self.target_logit = target_logit
+        self.injection_source_logit = injection_source_logit
+        self.injection_target_logit = injection_target_logit
+        self.accumulator_source_logit = accumulator_source_logit
+        self.accumulator_target_logit = accumulator_target_logit
 
     def __len__(self):
         return self.source.size(0)
@@ -106,5 +148,7 @@ class CustomRehearsalDataset(torch.utils.data.Dataset):
         return (self.source[idx],
                 self.target[idx],
                 self.label[idx],
-                self.source_logit[idx],
-                self.target_logit[idx])
+                self.injection_source_logit[idx],
+                self.injection_target_logit[idx],
+                self.accumulator_source_logit[idx],
+                self.accumulator_target_logit[idx])

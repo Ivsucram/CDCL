@@ -26,6 +26,7 @@ from datetime import datetime
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.utils
 import yaml
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
@@ -378,9 +379,8 @@ def _parse_args(config_path=None):
 def main():
     utils.setup_default_logging()
     #args, args_text = _parse_args()
-    args, args_text = _parse_args(config_path='configs/datasets/mnist_usps.yml')
+    args, args_text = _parse_args(config_path='configs/datasets/usps_mnist.yml')
 
-    args.prefetcher = not args.no_prefetcher
     args.prefetcher = False
     args.distributed = False
     if 'WORLD_SIZE' in os.environ:
@@ -597,6 +597,7 @@ def main():
     train_loss_fn = train_loss_fn.cuda()
     distil_loss_fn = DistilLoss().cuda()
     loss_kl_fn = nn.KLDivLoss(reduction="batchmean").cuda()
+    # loss_kl_fn = nn.MSELoss().cuda()
     validate_loss_fn = nn.CrossEntropyLoss().cuda()
 
     # setup checkpoint saver and eval metric tracking
@@ -622,6 +623,16 @@ def main():
         with open(os.path.join(output_dir, 'args.yaml'), 'w') as f:
             f.write(args_text)
 
+    cil1_R_matrix = torch.zeros((args.tasks, args.tasks))
+    til1_R_matrix = torch.zeros((args.tasks, args.tasks))
+    cil1_b_matrix = torch.zeros(args.tasks)
+    til1_b_matrix = torch.zeros(args.tasks)
+
+    cil5_R_matrix = torch.zeros((args.tasks, args.tasks))
+    til5_R_matrix = torch.zeros((args.tasks, args.tasks))
+    cil5_b_matrix = torch.zeros(args.tasks)
+    til5_b_matrix = torch.zeros(args.tasks)
+
     try:
         for task in range(args.tasks):
             (loader_source_train, _, loader_target_train, _, num_aug_splits, mixup_active, mixup_fn) = create_loaders(
@@ -632,14 +643,25 @@ def main():
                 if args.distributed and hasattr(loader_source_train.sampler, 'set_epoch'):
                     loader_source_train.sampler.set_epoch(epoch)
 
+                if epoch == 0:
+                    (_, loader_source_eval, _, loader_target_eval, num_aug_splits, mixup_active, mixup_fn) = create_loaders(
+                        dataset_source_train, dataset_source_eval, dataset_target_train, dataset_target_eval, data_config, args, task
+                    )
+
+                    eval_metrics = validate(model, (loader_source_eval, loader_target_eval), validate_loss_fn, args, amp_autocast=amp_autocast, til_task=task, cil_task=task)
+                    cil1_b_matrix[task] = eval_metrics['cil_top1_t']
+                    til1_b_matrix[task] = eval_metrics['til_top1_t']
+                    cil5_b_matrix[task] = eval_metrics['cil_top5_t']
+                    til5_b_matrix[task] = eval_metrics['til_top5_t']
+
+                # if epoch == args.epochs:
+                #     memory_manager.increment_task()
+
                 train_metrics = train_one_epoch(
                     epoch, model, (loader_source_train, loader_target_train), optimizer, (train_loss_fn, distil_loss_fn, loss_kl_fn), args,
                     lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
                     amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn, task=task,
                     memory_manager=memory_manager, last_epoch = (epoch == num_epochs - 1))
-
-                if epoch == num_epochs - 1:
-                    memory_manager.increment_task()
 
                 if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
                     if args.local_rank == 0:
@@ -670,6 +692,12 @@ def main():
                             epoch, train_metrics, eval_metrics, os.path.join(output_dir, 'summary.csv'),
                             write_header=best_metric is None, log_wandb=args.log_wandb and has_wandb, train_task=task, test_task=test_task)
 
+                    if epoch == num_epochs - 1:
+                        cil1_R_matrix[test_task][task] = eval_metrics['cil_top1_t']
+                        til1_R_matrix[test_task][task] = eval_metrics['til_top1_t']
+                        cil5_R_matrix[test_task][task] = eval_metrics['cil_top5_t']
+                        til5_R_matrix[test_task][task] = eval_metrics['til_top5_t']
+
                     # if saver is not None:
                         # save proper checkpoint with eval metric
                         # save_metric = eval_metrics[eval_metric]
@@ -677,6 +705,40 @@ def main():
 
     except KeyboardInterrupt:
         pass
+
+    cil_acc1, cil_fwt1, cil_bwt1, cil_fgt1 = cil1_R_matrix.T[-1].mean().item(), (cil1_R_matrix.T[-1][1:] - cil1_b_matrix[1:]).mean().item(), (cil1_R_matrix.T[-1][0:-1] - cil1_R_matrix.diagonal()[0:-1]).mean().item(), ((cil1_R_matrix[0:-1].T - cil1_R_matrix.T[-1][0:-1]).max(0)[0]).mean().item()
+    cil_acc5, cil_fwt5, cil_bwt5, cil_fgt5 = cil5_R_matrix.T[-1].mean().item(), (cil5_R_matrix.T[-1][1:] - cil5_b_matrix[1:]).mean().item(), (cil5_R_matrix.T[-1][0:-1] - cil5_R_matrix.diagonal()[0:-1]).mean().item(), ((cil5_R_matrix[0:-1].T - cil5_R_matrix.T[-1][0:-1]).max(0)[0]).mean().item()
+    til_acc1, til_fwt1, til_bwt1, til_fgt1 = til1_R_matrix.T[-1].mean().item(), (til1_R_matrix.T[-1][1:] - til1_b_matrix[1:]).mean().item(), (til1_R_matrix.T[-1][0:-1] - til1_R_matrix.diagonal()[0:-1]).mean().item(), ((til1_R_matrix[0:-1].T - til1_R_matrix.T[-1][0:-1]).max(0)[0]).mean().item()
+    til_acc5, til_fwt5, til_bwt5, til_fgt5 = til5_R_matrix.T[-1].mean().item(), (til5_R_matrix.T[-1][1:] - til5_b_matrix[1:]).mean().item(), (til5_R_matrix.T[-1][0:-1] - til5_R_matrix.diagonal()[0:-1]).mean().item(), ((til5_R_matrix[0:-1].T - til5_R_matrix.T[-1][0:-1]).max(0)[0]).mean().item()
+
+    print(f'{cil_acc1=:5.2f} {cil_fwt1=:5.2f} {cil_bwt1=:5.2f} {cil_fgt1=:5.2f}')
+    print(f'{cil_acc5=:5.2f} {cil_fwt5=:5.2f} {cil_bwt5=:5.2f} {cil_fgt5=:5.2f}')
+    print(f'{til_acc1=:5.2f} {til_fwt1=:5.2f} {til_bwt1=:5.2f} {til_fgt1=:5.2f}')
+    print(f'{til_acc5=:5.2f} {til_fwt5=:5.2f} {til_bwt5=:5.2f} {til_fgt5=:5.2f}')
+
+    if args.log_wandb:
+        rowd = OrderedDict()
+        rowd.update([('CIL ACC @ 1', cil_acc1)])
+        rowd.update([('CIL FWT @ 1', cil_fwt1)])
+        rowd.update([('CIL BWT @ 1', cil_bwt1)])
+        rowd.update([('CIL FGT @ 1', cil_fgt1)])
+
+        rowd.update([('CIL ACC @ 5', cil_acc5)])
+        rowd.update([('CIL FWT @ 5', cil_fwt5)])
+        rowd.update([('CIL BWT @ 5', cil_bwt5)])
+        rowd.update([('CIL FGT @ 5', cil_fgt5)])
+
+        rowd.update([('TIL ACC @ 1', til_acc1)])
+        rowd.update([('TIL FWT @ 1', til_fwt1)])
+        rowd.update([('TIL BWT @ 1', til_bwt1)])
+        rowd.update([('TIL FGT @ 1', til_fgt1)])
+
+        rowd.update([('TIL ACC @ 5', til_acc5)])
+        rowd.update([('TIL FWT @ 5', til_fwt5)])
+        rowd.update([('TIL BWT @ 5', til_bwt5)])
+        rowd.update([('TIL FGT @ 5', til_fgt5)])
+        wandb.log(rowd)
+
     if best_metric is not None:
         _logger.info('*** Best metric: {0} (epoch {1})'.format(best_metric, best_epoch))
 
@@ -684,16 +746,13 @@ def main():
 def train_one_epoch(
         epoch, model, loader, optimizer, loss_fn, args,
         lr_scheduler=None, saver=None, output_dir=None, amp_autocast=suppress,
-        loss_scaler=None, model_ema=None, mixup_fn=None, task=0, last_k=None, memory_manager=None, last_epoch=False):
+        loss_scaler=None, model_ema=None, mixup_fn=None, task=0, memory_manager=None, last_epoch=False):
 
     loader_target = loader[1]
     loader = loader[0]
     loss_distil_fn = loss_fn[1]
     loss_kl_fn = loss_fn[2]
     loss_cross_entropy_fn = loss_fn[0]
-    if last_k is not None:
-        last_k_importance = last_k[1]
-        last_k = last_k = [0]
 
     if args.mixup_off_epoch and epoch >= args.mixup_off_epoch:
         if args.prefetcher and loader.mixup_enabled:
@@ -713,18 +772,8 @@ def train_one_epoch(
 
     mask = torch.zeros(args.num_classes).cuda()
     for i in range(mask.size(0)):
-        if (args.num_classes // args.tasks * (task)) <= i < (args.num_classes // args.tasks * (task + 1)):
+        if i < (args.num_classes // args.tasks * (task + 1)):            
             mask[i] = 1
-
-    loader_memory = None
-    if task > 0:
-        memory_task = epoch % task
-        loader_memory = memory_manager.dataset_loader(task=memory_task)
-
-        memory_mask = torch.zeros(args.num_classes).cuda()
-        for i in range(memory_mask.size(0)):
-            if (args.num_classes // args.tasks * (memory_task)) <= i < (args.num_classes // args.tasks * (memory_task + 1)):
-                memory_mask[i] = 1
 
     model.train()
 
@@ -732,6 +781,8 @@ def train_one_epoch(
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
     dataloader_target_iterator = iter(loader_target)
+    
+    loader_memory = memory_manager.dataset_loader(task=task-1, mix_tasks=True) if task > 0 else None
     if loader_memory is not None:
         dataloader_memory_iterator = iter(loader_memory)
 
@@ -750,11 +801,12 @@ def train_one_epoch(
             if batch_idx == 0:
                 _logger.info('Computing pseudo-labels centroids')
                 if args.source_center_aware:
-                    center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, loader, task=task)
+                    center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, loader, task=task, args=args)
                 else:
-                    center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, task=task)
+                    center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, task=task, args=args)
                 model.train()
-                if last_epoch:
+                # if last_epoch:
+                if epoch >= args.epochs:
                     _logger.info('Slower epoch: Saving confident paired samples into memory')
 
             with amp_autocast():
@@ -771,58 +823,72 @@ def train_one_epoch(
                 (inj_input_source, inj_input_target, inj_label_source), (acc_input_source, acc_input_target, acc_label_source) = center_aware_pseudo_module.reorder_datasets2(model, input_source, label_source, input_target, task=task)
                 model.train()
                 
-                if acc_input_source is None:
+                if inj_input_source is None:
                     sample_pairs_m.update(0)
-                    injection_output, accumulator_output, _ = model(input_source, task=task)
+                    injection_output, accumulator_output, _, previous_k_w, (k_w, k_b) = model(input_source, task=task)
                     accumulator_output = accumulator_output * torch.transpose(mask, 0, 0)
-                    loss_i = loss_cross_entropy_fn(injection_output + 1e-8, label_source - (args.num_classes // args.tasks * task))
-                    loss_s = loss_cross_entropy_fn(accumulator_output + 1e-8, label_source)
+                    loss_i += loss_cross_entropy_fn(injection_output, label_source - (args.num_classes // args.tasks * task))
+                    loss_s += loss_cross_entropy_fn(accumulator_output, label_source)
                 else:    
                     sample_pairs_m.update(input_source.size(0))
 
                     ((injection_output, injection_output_target, injection_output_fusion),
                     (accumulator_output, accumulator_output_target, accumulator_output_fusion),
-                    _) = model(acc_input_source, acc_input_target, task=task)
+                    _,
+                    (previous_k_w, previous_k_b),
+                    (k_w, k_b)) = model(inj_input_source, inj_input_target, task=task)
 
                     accumulator_output, accumulator_output_target, accumulator_output_fusion = accumulator_output * torch.transpose(mask, 0, 0), accumulator_output_target * torch.transpose(mask, 0, 0), accumulator_output_fusion * torch.transpose(mask, 0, 0)
 
-                    loss_s = loss_cross_entropy_fn(accumulator_output + 1e-8, acc_label_source)
-                    loss_t = loss_cross_entropy_fn(accumulator_output_target + 1e-8, acc_label_source)
-                    loss_d = loss_distil_fn(accumulator_output_target + 1e-8, accumulator_output_fusion + 1e-8)
+                    loss_s += loss_cross_entropy_fn(accumulator_output, inj_label_source)
+                    loss_t += loss_cross_entropy_fn(accumulator_output_target, inj_label_source)
+                    loss_d += loss_distil_fn(accumulator_output_target, accumulator_output_fusion)
 
-                    loss_i = loss_cross_entropy_fn(injection_output + 1e-8, acc_label_source - (args.num_classes // args.tasks * task))
-                    loss_i += loss_cross_entropy_fn(injection_output_target + 1e-8, acc_label_source - (args.num_classes // args.tasks * task))
-                    loss_i += loss_distil_fn(injection_output_target + 1e-8, injection_output_fusion + 1e-8)
+                    loss_i += loss_cross_entropy_fn(injection_output, inj_label_source - (args.num_classes // args.tasks * task))
+                    loss_i += loss_cross_entropy_fn(injection_output_target, inj_label_source - (args.num_classes // args.tasks * task))
+                    loss_i += loss_distil_fn(injection_output_target, injection_output_fusion)
 
-                if last_epoch and inj_input_source is not None:
-                        for xs, xt, ys, ils, ilt, als, alt in zip(inj_input_source, inj_input_target, inj_label_source, injection_output, injection_output_target, accumulator_output, accumulator_output_target):
-                            memory_manager.add_sample(xs, xt, ys, ils, ilt, als, alt, task)
+                # if last_epoch and inj_input_source is not None:
+                if epoch >= args.epochs and inj_input_source is not None:
+                    if batch_idx == 0:
+                        memory_manager.zero_task(task)
+                    for xs, xt, ys, ils, ilt, als, alt in zip(inj_input_source, inj_input_target, inj_label_source, injection_output, injection_output_target, accumulator_output, accumulator_output_target):
+                        memory_manager.add_sample(xs, xt, ys, ils, ilt, als, alt, task)
         else:
             with amp_autocast():
-                injection_output, accumulator_output, _ = model(input_source, task=task)
+                injection_output, accumulator_output, _, (previous_k_w, previous_k_b), (k_w, k_b) = model(input_source, task=task)
                 accumulator_output = accumulator_output * torch.transpose(mask, 0, 0)
-                loss_i = loss_cross_entropy_fn(injection_output + 1e-8, label_source - (args.num_classes // args.tasks * task))
-                loss_s = loss_cross_entropy_fn(accumulator_output + 1e-8, label_source)
+                loss_i += loss_cross_entropy_fn(injection_output, label_source - (args.num_classes // args.tasks * task))
+                loss_s += loss_cross_entropy_fn(accumulator_output, label_source)
 
-        if task > 0:
-            try:
-                (source_memory, target_memory, label_memory, source_logit, target_logit) = next(dataloader_memory_iterator)
-            except StopIteration:
-                dataloader_memory_iterator = iter(loader_memory)
-                (source_memory, target_memory, label_memory, source_logit, target_logit) = next(dataloader_memory_iterator)
+        if epoch >= args.epochs:
+            loader_memory = memory_manager.dataset_loader(task=task, mix_tasks=True)
+            dataloader_memory_iterator = iter(loader_memory)
 
-            source_memory, target_memory, label_memory, source_logit, target_logit = source_memory.cuda(), target_memory.cuda(), label_memory.cuda(), source_logit.cuda(), target_logit.cuda()
+        if task > 0 or epoch >= args.epochs:
+            with amp_autocast():
+                # if task > 0:
+                #     loss_a += torch.norm(torch.gradient(previous_k_w, dim=0)[0].mean(0).unsqueeze(0) * loss_i * (k_w - previous_k_w), p=1)
+                #     loss_a += torch.norm(torch.gradient(previous_k_b, dim=0)[0].mean(0).unsqueeze(0) * loss_i * (k_b - previous_k_b), p=1)
 
-            (_, (memory_output, memory_output_target, memory_output_fusion), _) = model(source_memory, target_memory, task=memory_task)
+                try:
+                    (source_memory, target_memory, label_memory, _, _, acc_source_logit, acc_target_logit) = next(dataloader_memory_iterator)
+                except StopIteration:
+                    dataloader_memory_iterator = iter(loader_memory)
+                    (source_memory, target_memory, label_memory, _, _, acc_source_logit, acc_target_logit) = next(dataloader_memory_iterator)
 
-            memory_output, memory_output_target, memory_output_fusion = memory_output * torch.transpose(memory_mask, 0, 0), memory_output_target * torch.transpose(memory_mask, 0, 0), memory_output_fusion * torch.transpose(memory_mask, 0, 0)
-            source_logit, target_logit = source_logit * torch.transpose(memory_mask, 0, 0), target_logit * torch.transpose(memory_mask, 0, 0)
+                source_memory, target_memory, label_memory = source_memory.cuda(), target_memory.cuda(), label_memory.cuda()
+                acc_source_logit, acc_target_logit = acc_source_logit.cuda(), acc_target_logit.cuda()
 
-            loss_r = loss_kl_fn(nn.Softmax(1)(memory_output), nn.Softmax(1)(source_logit))
-            loss_r += loss_kl_fn(nn.Softmax(1)(memory_output_target), nn.Softmax(1)(target_logit))
-            loss_r += loss_cross_entropy_fn(memory_output + 1e-8, label_memory)
-            loss_r += loss_cross_entropy_fn(memory_output_target + 1e-8, label_memory)
-            loss_r += loss_distil_fn(memory_output_target + 1e-8, memory_output_fusion + 1e-8)
+                (_, (acc_memory_output, acc_memory_output_target, acc_memory_output_fusion), _, _, _) = model(source_memory, target_memory, task=task)
+
+                acc_memory_output, acc_memory_output_target, acc_memory_output_fusion = acc_memory_output * torch.transpose(mask, 0, 0), acc_memory_output_target * torch.transpose(mask, 0, 0), acc_memory_output_fusion * torch.transpose(mask, 0, 0)
+
+                loss_r += loss_kl_fn(F.softmax(acc_memory_output, dim=-1), F.softmax(acc_source_logit, dim=-1))
+                loss_r += loss_kl_fn(F.softmax(acc_memory_output_target, dim=-1), F.softmax(acc_target_logit, dim=-1))
+                loss_r += loss_cross_entropy_fn(acc_memory_output, label_memory)
+                loss_r += loss_cross_entropy_fn(acc_memory_output_target, label_memory)
+                loss_r += loss_distil_fn(acc_memory_output_target, acc_memory_output_fusion)
 
         alpha_1, alpha_2, alpha_3, alpha_4, alpha_5, alpha_6 = 1., 1., 1., 1., 1., 1.
         loss = alpha_1 * loss_s + alpha_2 * loss_t + alpha_3 * loss_d + alpha_4 * loss_a + alpha_5 * loss_i + alpha_6 * loss_r
@@ -969,8 +1035,8 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='',
                 input = input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
-                _, cil_output, _ = model(input, task=cil_task)
-                til_output, _, _ = model(input, task=til_task)
+                _, cil_output, _, _, _ = model(input, task=cil_task)
+                til_output, _, _, _, _ = model(input, task=til_task)
             if isinstance(cil_output, (tuple, list)): cil_output = cil_output[0]
             if isinstance(til_output, (tuple, list)): til_output = til_output[0]
 
@@ -1019,15 +1085,12 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='',
                     'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
                     'CIL_Loss_t: {cil_loss_t.avg:>6.4f}  '
                     'CIL_Acc_t@1: {cil_top1t.avg:>7.4f}  '
-                    'CIL_Acc_t@5: {cil_top5t.avg:>7.4f}  '
                     'TIL_Loss_t: {til_loss_t.avg:>6.4f}  '
-                    'TIL_Acc_t@1: {til_top1t.avg:>7.4f}  '
-                    'TIL_Acc_t@5: {til_top5t.avg:>7.4f}'.format(
+                    'TIL_Acc_t@1: {til_top1t.avg:>7.4f}'.format(
                         log_name, batch_idx, last_idx, 100. * batch_idx / last_idx,
                         batch_time=batch_time_m,
                         cil_loss_t=cil_losses_t_m, til_loss_t=til_losses_t_m,
-                        cil_top1t=cil_top1_t_m, cil_top5t=cil_top5_t_m,
-                        til_top1t=til_top1_t_m, til_top5t=til_top5_t_m))
+                        cil_top1t=cil_top1_t_m, til_top1t=til_top1_t_m))
 
     end = time.time()
     last_idx = len(loader) - 1
@@ -1040,8 +1103,8 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='',
                 input = input.contiguous(memory_format=torch.channels_last)
 
             with amp_autocast():
-                _, cil_output, _ = model(input, task=cil_task)
-                til_output, _, _ = model(input, task=til_task)
+                _, cil_output, _, _, _ = model(input, task=cil_task)
+                til_output, _, _, _, _ = model(input, task=til_task)
             if isinstance(cil_output, (tuple, list)): cil_output = cil_output[0]
             if isinstance(til_output, (tuple, list)): til_output = til_output[0]
 
@@ -1090,24 +1153,18 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='',
                     'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
                     'CIL_Loss_s: {cil_loss_s.avg:>6.4f}  '
                     'CIL_Acc_s@1: {cil_top1s.avg:>7.4f}  '
-                    'CIL_Acc_s@5: {cil_top5s.avg:>7.4f}  '
                     'TIL_Loss_s: {til_loss_s.avg:>6.4f}  '
                     'TIL_Acc_s@1: {til_top1s.avg:>7.4f}  '
-                    'TIL_Acc_s@5: {til_top5s.avg:>7.4f}  '
                     'CIL_Loss_t: {cil_loss_t.avg:>6.4f}  '
                     'CIL_Acc_t@1: {cil_top1t.avg:>7.4f}  '
-                    'CIL_Acc_t@5: {cil_top5t.avg:>7.4f}  '
                     'TIL_Loss_t: {til_loss_t.avg:>6.4f}  '
-                    'TIL_Acc_t@1: {til_top1t.avg:>7.4f}  '
-                    'TIL_Acc_t@5: {til_top5t.avg:>7.4f}'.format(
+                    'TIL_Acc_t@1: {til_top1t.avg:>7.4f}'.format(
                         log_name, batch_idx, last_idx, 100. * batch_idx / last_idx,
                         batch_time=batch_time_m,
                         cil_loss_s=cil_losses_s_m, cil_loss_t=cil_losses_t_m,
                         til_loss_s=til_losses_s_m, til_loss_t=til_losses_t_m,
-                        cil_top1s=cil_top1_s_m, cil_top5s=cil_top5_s_m,
-                        cil_top1t=cil_top1_t_m, cil_top5t=cil_top5_t_m,
-                        til_top1s=til_top1_s_m, til_top5s=til_top5_s_m,
-                        til_top1t=til_top1_t_m, til_top5t=til_top5_t_m))
+                        cil_top1s=cil_top1_s_m, cil_top1t=cil_top1_t_m,
+                        til_top1s=til_top1_s_m, til_top1t=til_top1_t_m))
 
     metrics = OrderedDict([('task', cil_task),
             	           ('cil_loss_s', cil_losses_s_m.avg),

@@ -1,6 +1,6 @@
 dataset_source: visda
 dataset_target: visda
-model: cct_14_7x2_224
+model: clcd_14_7x2_224
 chans: 3
 num_classes: 12
 img_size: 224
@@ -13,8 +13,8 @@ validation_batch_size: 128
 lr: 5e-5
 min_lr: 1e-6
 sched: cosine
-epochs: 125
-cooldown_epochs: 10
+epochs: 100
+cooldown_epochs: 25
 warmup_epochs: 25
 warmup_lr: 1e-5
 opt: adamw

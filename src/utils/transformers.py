@@ -57,7 +57,7 @@ class AttentionCrossAttention(Attention):
 
         self.k = [None] * self.n_tasks
         for i in range(self.n_tasks):
-            self.k[i] = Linear(dim, dim, bias=True).cuda() # FIXME: Remvoe this cuda() call
+            self.k[i] = Linear(dim, dim, bias=True).cuda() # FIXME: Remove this cuda() call
 
         self.qv = Linear(dim, dim * 2, bias=qkv_bias)
         self.attn = None
@@ -79,7 +79,7 @@ class AttentionCrossAttention(Attention):
             x = x.transpose(1, 2).reshape(B, N, C)
             x = self.proj(x)
             x = self.proj_drop(x)
-            return x
+            return x, self.k[task].weight, self.k[task].bias
         else:
             qkv = self.qv(x).reshape(B, N, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
             k = self.k[task](x).reshape(B, N, 1, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
@@ -117,7 +117,10 @@ class AttentionCrossAttention(Attention):
             x3 = self.proj(x3)
             x3 = self.proj_drop(x3)
 
-        return x, x2, x3, None
+        return x, x2, x3, self.k[task].weight, self.k[task].bias
+
+    def get_k_weight_bias(self, task=0):
+        return self.k[task].weight, self.k[task].bias
         
 
 
@@ -145,16 +148,14 @@ class TransformerCrossEncoderLayer(Module):
 
         self.activation = F.gelu
 
-    def forward(self, x, x2=None, x1_x2_fusion=None):
+    def forward(self, x, x2=None, x1_x2_fusion=None, task=0):
         if x2 is None or x1_x2_fusion is None:
-            xa_attn = self.self_attn(self.pre_norm(x))
-            # xa_attn = self.conv_one(xa_attn)
+            xa_attn, xkw, xkb = self.self_attn(self.pre_norm(x), task=task)
             xa = x + self.drop_path(xa_attn)
             xa = xa + self.drop_path(self._mlp(self.norm1(xa)))
-            return xa
+            return xa, xkw, xkb
         else:
-            xa_attn, xa_attn2, xa_attn3, cross_attn = self.self_attn(self.pre_norm(x),self.pre_norm(x2))
-            # xa_attn, xa_attn2, xa_attn3, cross_attn = self.conv_one(xa_attn), self.conv_one(xa_attn2), self.conv_one(xa_attn3), self.conv_one(cross_attn)
+            xa_attn, xa_attn2, xa_attn3, xkw, xkb = self.self_attn(self.pre_norm(x),self.pre_norm(x2), task=task)
             xa = x + self.drop_path(xa_attn)
             xa = xa + self.drop_path(self._mlp(self.norm1(xa)))
 
@@ -164,7 +165,7 @@ class TransformerCrossEncoderLayer(Module):
             xab = x1_x2_fusion + self.drop_path(xa_attn3)
             xab = xab + self.drop_path(self._mlp(self.norm1(xab)))
 
-            return xa, xb, xab, cross_attn
+            return xa, xb, xab, xkw, xkb
     
     def _mlp(self, x):
         x = self.linear1(x)
@@ -173,6 +174,9 @@ class TransformerCrossEncoderLayer(Module):
         x = self.linear2(x)
         x = self.dropout2(x)
         return x
+
+    def get_k_weight_bias(self, task=0):
+        return self.self_attn.get_k_weight_bias(task=task)
 
 
 class TransformerClassifier(Module):
@@ -255,6 +259,7 @@ class TransformerClassifier(Module):
             x += self.positional_emb
 
         x = self.dropout(x)
+        _x = x.clone()
 
         if x2 is not None:
             if self.positional_emb is None and x2.size(1) < self.sequence_length:
@@ -269,25 +274,39 @@ class TransformerClassifier(Module):
 
             x2 = self.dropout(x2)
             x_x2_fusion = x2 if x_x2_fusion is None else x_x2_fusion
-            cross_attention_list = []
+        previous_bias_list = []
+        current_bias_list = []
+        previous_k_list = []
+        current_k_list = []
 
         for blk in self.blocks:
             if x2 is not None: 
-                x, x2, x_x2_fusion, cross_attention = blk(x, x2, x_x2_fusion)
-                cross_attention_list.append(cross_attention)
+                x, x2, x_x2_fusion, xkw, xkb = blk(x, x2, x_x2_fusion, task=task)
             else:
-                x = blk(x)
+                x, xkw, xkb = blk(x, task=task)
+            current_k_list.append(xkw)
+            current_bias_list.append(xkb)
+        
+        if task > 0:
+            for blk in self.blocks:
+                    xkw, xkb = blk.get_k_weight_bias(task=task - 1)
+                    previous_k_list.append(xkw.detach())
+                    previous_bias_list.append(xkb.detach())
 
         x = self.norm(x)
+        current_k_list = torch.stack(current_k_list)
+        current_bias_list = torch.stack(current_bias_list)
+        if task > 0: previous_k_list = torch.stack(previous_k_list)
+        if task > 0: previous_bias_list = torch.stack(previous_bias_list)
 
         if x2 is not None:
             x2 = self.norm(x2)
             x_x2_fusion = self.norm(x_x2_fusion)
 
-            return self.out(x, x2, x_x2_fusion, task=task)
-        return self.out(x, task=task)
+            return self.out(x, x2, x_x2_fusion, (previous_k_list, previous_bias_list), (current_k_list, current_bias_list), task=task)
+        return self.out(x, previous_k_bias_list=(previous_k_list, previous_bias_list), k_bias_list=(current_k_list, current_bias_list), task=task)
 
-    def out(self, x, x2=None, x_x2_fusion=None, task=0):
+    def out(self, x, x2=None, x_x2_fusion=None, previous_k_bias_list=None, k_bias_list=None, task=0):
         if self.seq_pool:
             x_ = torch.matmul(F.softmax(self.attention_pool(x), dim=1).transpose(-1, -2), x).squeeze(-2)
         else:
@@ -304,9 +323,11 @@ class TransformerClassifier(Module):
             return ((self.fc_i[task](x_), self.fc_i[task](x2_), self.fc_i[task](x_x2_fusion_)), 
                     (self.fc_a(x_), self.fc_a(x2_), self.fc_a(x_x2_fusion_)), 
                     (x_, x2_, x_x2_fusion_), 
-                    (x, x2, x_x2_fusion))
+                    (x, x2, x_x2_fusion),
+                    (previous_k_bias_list[0], previous_k_bias_list[1]),
+                    (k_bias_list[0], k_bias_list[1]))
             
-        return (self.fc_i[task](x_)), (self.fc_a(x_)), (x_), (x)
+        return (self.fc_i[task](x_)), (self.fc_a(x_)), (x_), (x), (previous_k_bias_list[0], previous_k_bias_list[1]), (k_bias_list[0], k_bias_list[1])
 
     @staticmethod
     def init_weight(m):
