@@ -2,11 +2,10 @@ import os
 from tkinter.tix import Tree
 import torchvision
 
-from torchvision.datasets.utils import download_and_extract_archive
+from torchvision.datasets.utils import download_and_extract_archive, download_url
 
-from avalanche.benchmarks.classic import SplitMNIST
 from avalanche.benchmarks.generators import nc_benchmark
-from avalanche.benchmarks.scenarios.new_classes.nc_scenario import NCExperience, NCScenario
+from .image_filelist_dataset import ImageFilelist
 
 
 
@@ -116,4 +115,100 @@ def create_dataset(name, is_training, args, force_unique_tasks=False):
         ds = torchvision.datasets.ImageFolder('./data/office_home/Real World')
         ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
                             fixed_class_order=range(0, 65), train_transform=transforms, eval_transform=transforms)
+    elif name == 'domainnet_clipart':
+        if not os.path.isdir('./data/domainnet'):
+            os.mkdir('./data/domainnet')
+        if not os.path.isdir('./data/domainnet/clipart'):
+            download_and_extract_archive(url='http://csr.bu.edu/ftp/visda/2019/multi-source/groundtruth/clipart.zip',
+                    download_root='./data/domainnet',
+                    extract_root='./data/domainnet',
+                    filename='clipart.zip'
+            )
+        if not os.path.exists('./data/domainnet/clipart_train.txt'):
+            download_url('http://csr.bu.edu/ftp/visda/2019/multi-source/domainnet/txt/clipart_train.txt', './data/domainnet')
+        if not os.path.exists('./data/domainnet/clipart_test.txt'):
+            download_url('http://csr.bu.edu/ftp/visda/2019/multi-source/domainnet/txt/clipart_test.txt', './data/domainnet')
+        ds = ImageFilelist('./data/domainnet/clipart', f"./data/domainnet/clipart_{'train' if is_training else 'test'}.txt")
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 345), train_transform=transforms, eval_transform=transforms)
+    elif name == 'domainnet_infograph':
+        if not os.path.isdir('./data/domainnet'):
+            os.mkdir('./data/domainnet')
+        if not os.path.isdir('./data/domainnet/infograph'):
+            download_and_extract_archive(url='http://csr.bu.edu/ftp/visda/2019/multi-source/infograph.zip',
+                    download_root='./data/domainnet',
+                    extract_root='./data/domainnet',
+                    filename='infograph.zip'
+            )
+        if not os.path.exists('./data/domainnet/infograph_train.txt'):
+            download_url('http://csr.bu.edu/ftp/visda/2019/multi-source/domainnet/txt/infograph_train.txt', './data/domainnet')
+        if not os.path.exists('./data/domainnet/infograph_test.txt'):
+            download_url('http://csr.bu.edu/ftp/visda/2019/multi-source/domainnet/txt/infograph_test.txt', './data/domainnet')
+        ds = ImageFilelist('./data/domainnet/infograph', f"./data/domainnet/infograph_{'train' if is_training else 'test'}.txt")
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 345), train_transform=transforms, eval_transform=transforms)
+    elif name == 'domainnet_painting':
+        if not os.path.isdir('./data/domainnet'):
+            os.mkdir('./data/domainnet')
+        if not os.path.isdir('./data/domainnet/painting'):
+            download_and_extract_archive(url='http://csr.bu.edu/ftp/visda/2019/multi-source/groundtruth/painting.zip',
+                    download_root='./data/domainnet',
+                    extract_root='./data/domainnet',
+                    filename='painting.zip'
+            )
+        if not os.path.exists('./data/domainnet/painting_train.txt'):
+            download_url('http://csr.bu.edu/ftp/visda/2019/multi-source/domainnet/txt/painting_train.txt', './data/domainnet')
+        if not os.path.exists('./data/domainnet/painting_test.txt'):
+            download_url('http://csr.bu.edu/ftp/visda/2019/multi-source/domainnet/txt/painting_test.txt', './data/domainnet')
+        ds = ImageFilelist('./data/domainnet/painting', f"./data/domainnet/painting_{'train' if is_training else 'test'}.txt")
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 345), train_transform=transforms, eval_transform=transforms)
+    elif name == 'domainnet_quickdraw':
+        if not os.path.isdir('./data/domainnet'):
+            os.mkdir('./data/domainnet')
+        if not os.path.isdir('./data/domainnet/quickdraw'):
+            download_and_extract_archive(url='http://csr.bu.edu/ftp/visda/2019/multi-source/quickdraw.zip',
+                    download_root='./data/domainnet',
+                    extract_root='./data/domainnet',
+                    filename='quickdraw.zip'
+            )
+        if not os.path.exists('./data/domainnet/quickdraw_train.txt'):
+            download_url('http://csr.bu.edu/ftp/visda/2019/multi-source/domainnet/txt/quickdraw_train.txt', './data/domainnet')
+        if not os.path.exists('./data/domainnet/quickdraw_test.txt'):
+            download_url('http://csr.bu.edu/ftp/visda/2019/multi-source/domainnet/txt/quickdraw_test.txt', './data/domainnet')
+        ds = ImageFilelist('./data/domainnet/quickdraw', f"./data/domainnet/quickdraw_{'train' if is_training else 'test'}.txt")
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 345), train_transform=transforms, eval_transform=transforms)
+    elif name == 'domainnet_real':
+        if not os.path.isdir('./data/domainnet'):
+            os.mkdir('./data/domainnet')
+        if not os.path.isdir('./data/domainnet/real'):
+            download_and_extract_archive(url='http://csr.bu.edu/ftp/visda/2019/multi-source/real.zip',
+                    download_root='./data/domainnet',
+                    extract_root='./data/domainnet',
+                    filename='real.zip'
+            )
+        if not os.path.exists('./data/domainnet/real_train.txt'):
+            download_url('http://csr.bu.edu/ftp/visda/2019/multi-source/domainnet/txt/real_train.txt', './data/domainnet')
+        if not os.path.exists('./data/domainnet/real_test.txt'):
+            download_url('http://csr.bu.edu/ftp/visda/2019/multi-source/domainnet/txt/real_test.txt', './data/domainnet')
+        ds = ImageFilelist('./data/domainnet/real', f"./data/domainnet/real_{'train' if is_training else 'test'}.txt")
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 345), train_transform=transforms, eval_transform=transforms)
+    elif name == 'domainnet_sketch':
+        if not os.path.isdir('./data/domainnet'):
+            os.mkdir('./data/domainnet')
+        if not os.path.isdir('./data/domainnet/sketch'):
+            download_and_extract_archive(url='http://csr.bu.edu/ftp/visda/2019/multi-source/sketch.zip',
+                    download_root='./data/domainnet',
+                    extract_root='./data/domainnet',
+                    filename='sketch.zip'
+            )
+        if not os.path.exists('./data/domainnet/sketch_train.txt'):
+            download_url('http://csr.bu.edu/ftp/visda/2019/multi-source/domainnet/txt/sketch_train.txt', './data/domainnet')
+        if not os.path.exists('./data/domainnet/sketch_test.txt'):
+            download_url('http://csr.bu.edu/ftp/visda/2019/multi-source/domainnet/txt/sketch_test.txt', './data/domainnet')
+        ds = ImageFilelist('./data/domainnet/sketch', f"./data/domainnet/sketch_{'train' if is_training else 'test'}.txt")
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 345), train_transform=transforms, eval_transform=transforms)
     return ds
