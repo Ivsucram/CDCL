@@ -84,8 +84,36 @@ def create_dataset(name, is_training, args, force_unique_tasks=False):
         ds = torchvision.datasets.ImageFolder('./data/office31/dslr/images')
         ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
                             fixed_class_order=range(0, 30), train_transform=transforms, eval_transform=transforms)
-    elif name == 'cifar10':
-        ds = torchvision.datasets.CIFAR10('./data/cifar10', train=is_training, download=True)
-    elif name == 'cifar100':
-        ds = torchvision.datasets.CIFAR100('./data/cifar100', train=is_training, download=True)
+    elif name == 'office_home_art':
+        if not os.path.isdir('./data/office_home'):
+            os.mkdir('./data/office_home')
+        if not (os.path.isdir('./data/office_home/Art') or os.path.isdir('./data/office_home/Clipart') or os.path.isdir('./data/office_home/Product') or os.path.isdir('./data/office_home/Real World')):
+            raise RuntimeError('Please, manually download the dataset from https://www.hemanthdv.org/officeHomeDataset.html and unzip in the folder ./data/office_home')
+        ds = torchvision.datasets.ImageFolder('./data/office_home/Art')
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 65), train_transform=transforms, eval_transform=transforms)
+    elif name == 'office_home_clipart':
+        if not os.path.isdir('./data/office_home'):
+            os.mkdir('./data/office_home')
+        if not (os.path.isdir('./data/office_home/Art') or os.path.isdir('./data/office_home/Clipart') or os.path.isdir('./data/office_home/Product') or os.path.isdir('./data/office_home/Real World')):
+            raise RuntimeError('Please, manually download the dataset from https://www.hemanthdv.org/officeHomeDataset.html and unzip in the folder ./data/office_home')
+        ds = torchvision.datasets.ImageFolder('./data/office_home/Clipart')
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 65), train_transform=transforms, eval_transform=transforms)
+    elif name == 'office_home_product':
+        if not os.path.isdir('./data/office_home'):
+            os.mkdir('./data/office_home')
+        if not (os.path.isdir('./data/office_home/Art') or os.path.isdir('./data/office_home/Clipart') or os.path.isdir('./data/office_home/Product') or os.path.isdir('./data/office_home/Real World')):
+            raise RuntimeError('Please, manually download the dataset from https://www.hemanthdv.org/officeHomeDataset.html and unzip in the folder ./data/office_home')
+        ds = torchvision.datasets.ImageFolder('./data/office_home/Product')
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 65), train_transform=transforms, eval_transform=transforms)
+    elif name == 'office_home_real':
+        if not os.path.isdir('./data/office_home'):
+            os.mkdir('./data/office_home')
+        if not (os.path.isdir('./data/office_home/Art') or os.path.isdir('./data/office_home/Clipart') or os.path.isdir('./data/office_home/Product') or os.path.isdir('./data/office_home/Real World')):
+            raise RuntimeError('Please, manually download the dataset from https://www.hemanthdv.org/officeHomeDataset.html and unzip in the folder ./data/office_home')
+        ds = torchvision.datasets.ImageFolder('./data/office_home/Real World')
+        ds = nc_benchmark(ds, ds, n_experiences=tasks, seed=args.seed, task_labels=True,
+                            fixed_class_order=range(0, 65), train_transform=transforms, eval_transform=transforms)
     return ds

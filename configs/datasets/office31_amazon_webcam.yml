@@ -2,7 +2,7 @@ dataset_source: office31_amazon
 dataset_target: office31_webcam
 model: clcd_14_7x2_224
 chans: 3
-num_classes: 31
+num_classes: 30
 img_size: 224
 interpolation: bicubic
 train_interpolation: random

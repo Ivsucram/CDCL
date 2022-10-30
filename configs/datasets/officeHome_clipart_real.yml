@@ -1,8 +1,8 @@
-dataset_source: office31_dslr
-dataset_target: office31_webcam
+dataset_source: office_home_clipart
+dataset_target: office_home_real
 model: clcd_14_7x2_224
 chans: 3
-num_classes: 30
+num_classes: 65
 img_size: 224
 interpolation: bicubic
 train_interpolation: random
@@ -20,6 +20,6 @@ warmup_lr: 1e-5
 opt: adamw
 workers: 2
 pretrained: False
-tasks: 6
+tasks: 13
 memory_size: 1000
 log_wandb: False
