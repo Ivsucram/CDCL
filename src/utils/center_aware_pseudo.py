@@ -83,8 +83,8 @@ class CenterAwarePseudoModule(torch.nn.Module):
             injection_labelset = injection_labelset[0]
             injection_labelset = torch.LongTensor(injection_labelset)
 
-            self.accumulator_labelset = accumulator_labelset
-            self.injection_labelset = injection_labelset
+            self.accumulator_labelset = accumulator_labelset.cuda()
+            self.injection_labelset = injection_labelset.cuda()
             self.accumulator_initc = accumulator_initc.cuda()
             self.injection_initc = injection_initc.cuda()
 

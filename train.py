@@ -348,7 +348,7 @@ group.add_argument('--use-multi-epochs-loader', action='store_true', default=Fal
                     help='use the multi-epochs-loader to save time at the beginning of every epoch')
 group.add_argument('--log-wandb', action='store_true', default=False,
                     help='log training and validation metrics to wandb')
-group.add_argument('--device_id', type=int, default=0, metavar='N', 
+group.add_argument('--device-id', type=int, default=0, metavar='N', 
                     help='If you have multiples GPU, select which single GPU will run this code (default: 0)')
 
 group.add_argument('--alpha-1', type=float, default=1., metavar='N',
@@ -806,10 +806,7 @@ def train_one_epoch(
         if epoch >= args.warmup_epochs:
             if batch_idx == 0:
                 _logger.info('Computing pseudo-labels centroids')
-                if args.source_center_aware:
-                    center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, loader, task=task, args=args)
-                else:
-                    center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, task=task, args=args)
+                center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, task=task, args=args)
                 model.train()
                 # if last_epoch:
                 if epoch >= args.epochs:
