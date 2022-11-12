@@ -1,4 +1,4 @@
-for SEED in 0 1 2 3 4 5 6 7 8 9
+for SEED in 0 1 2 3 4 5 6 7 8 9 # Select your SEED
 do
     python train.py --config 'configs/datasets/usps_mnist.yml' --experiment 'usps_mnist' --seed=$SEED --log-wandb
     python train.py --config 'configs/datasets/mnist_usps.yml' --experiment 'mnist_usps' --seed=$SEED --log-wandb
@@ -55,10 +55,7 @@ do
     python train.py --config 'configs/datasets/domainnet_sketch_painting.yml' --experiment 'domainnet_sketch_painting' --seed=$SEED --log-wandb
     python train.py --config 'configs/datasets/domainnet_sketch_quickdraw.yml' --experiment 'domainnet_sketch_quickdraw' --seed=$SEED --log-wandb
     python train.py --config 'configs/datasets/domainnet_sketch_real.yml' --experiment 'domainnet_sketch_real' --seed=$SEED --log-wandb
-done
 
-for SEED in 0 1 2 3 4 5 6 7 8 9
-do
     python train.py --config 'configs/datasets/usps_mnist.yml' --experiment 'usps_mnist_ablation_A' --seed=$SEED --alpha-1=0 --log-wandb
     python train.py --config 'configs/datasets/mnist_usps.yml' --experiment 'mnist_usps_ablation_A' --seed=$SEED  --alpha-1=0 --log-wandb
     python train.py --config 'configs/datasets/visda.yml' --experiment 'visda_ablation_A' --seed=$SEED --alpha-1=0 --log-wandb
