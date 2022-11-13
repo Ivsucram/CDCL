@@ -10,7 +10,7 @@ try:
 except ImportError:
     from .registry import register_model
 
-class CLCD(nn.Module):
+class CDCL(nn.Module):
     def __init__(self,
                  img_size=224,
                  embedding_dim=768,
@@ -32,7 +32,7 @@ class CLCD(nn.Module):
                  positional_embedding='learnable',
                  tasks=1,
                  *args, **kwargs):
-        super(CLCD, self).__init__()
+        super(CDCL, self).__init__()
 
         self.tokenizer = Tokenizer(n_input_channels=n_input_channels,
                                    n_output_channels=embedding_dim,
@@ -77,14 +77,14 @@ class CLCD(nn.Module):
         return (ix), (ax), (feat_x), (pkw, pkb), (kw, kb)
 
 
-def _clcd(arch, pretrained, progress,
+def _cdcl(arch, pretrained, progress,
          num_layers, num_heads, mlp_ratio, embedding_dim,
          n_input_channels=3, kernel_size=3, stride=None, padding=None,
          positional_embedding='learnable',
          *args, **kwargs):
     stride = stride if stride is not None else max(1, (kernel_size // 2) - 1)
     padding = padding if padding is not None else max(1, (kernel_size // 2))
-    model = CLCD(n_input_channels=n_input_channels,
+    model = CDCL(n_input_channels=n_input_channels,
                 num_layers=num_layers,
                 num_heads=num_heads,
                 mlp_ratio=mlp_ratio,
@@ -98,13 +98,13 @@ def _clcd(arch, pretrained, progress,
     return model
 
 
-def clcd_7(arch, pretrained, progress, *args, **kwargs):
-    return _clcd(arch, pretrained, progress, num_layers=7, num_heads=4, mlp_ratio=2, embedding_dim=256,
+def cdcl_7(arch, pretrained, progress, *args, **kwargs):
+    return _cdcl(arch, pretrained, progress, num_layers=7, num_heads=4, mlp_ratio=2, embedding_dim=256,
                 *args, **kwargs)
 
 
-def clcd_14(arch, pretrained, progress, *args, **kwargs):
-    return _clcd(arch, pretrained, progress, num_layers=14, num_heads=6, mlp_ratio=3, embedding_dim=384,
+def cdcl_14(arch, pretrained, progress, *args, **kwargs):
+    return _cdcl(arch, pretrained, progress, num_layers=14, num_heads=6, mlp_ratio=3, embedding_dim=384,
                 *args, **kwargs)
 
 
@@ -112,7 +112,7 @@ def clcd_14(arch, pretrained, progress, *args, **kwargs):
 def clcd_7_7x2_28(pretrained=False, progress=False,
                   img_size=28, positional_embedding='learnable', num_classes=102,
                   *args, **kwargs):
-    return clcd_7('clcd_7_7x2_28', pretrained, progress,
+    return cdcl_7('clcd_7_7x2_28', pretrained, progress,
                  n_input_channels=1, kernel_size=7, n_conv_layers=2,
                  img_size=img_size, positional_embedding=positional_embedding,
                  num_classes=num_classes,
@@ -122,7 +122,7 @@ def clcd_7_7x2_28(pretrained=False, progress=False,
 def clcd_14_7x2_224(pretrained=False, progress=False,
                    img_size=224, positional_embedding='learnable', num_classes=1000,
                    *args, **kwargs):
-    return clcd_14('clcd_14_7x2_224', pretrained, progress,
+    return cdcl_14('clcd_14_7x2_224', pretrained, progress,
                   kernel_size=7, n_conv_layers=2,
                   img_size=img_size, positional_embedding=positional_embedding,
                   num_classes=num_classes,

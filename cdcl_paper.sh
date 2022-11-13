@@ -1,4 +1,4 @@
-for SEED in 0 1 2 3 4 5 6 7 8 9 # Select your SEED
+for SEED in 0 1 2 3 4 # Select your SEED
 do
     python train.py --config 'configs/datasets/usps_mnist.yml' --experiment 'usps_mnist' --seed=$SEED --log-wandb
     python train.py --config 'configs/datasets/mnist_usps.yml' --experiment 'mnist_usps' --seed=$SEED --log-wandb
