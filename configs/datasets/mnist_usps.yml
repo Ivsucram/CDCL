@@ -17,6 +17,7 @@ train_interpolation: random
 amp: True
 source_batch_size: 64
 target_batch_size: 64
+memory_batch_size: 64
 validation_batch_size: 128
 lr: 5e-5
 min_lr: 1e-6
