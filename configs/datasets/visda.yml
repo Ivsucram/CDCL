@@ -7,10 +7,10 @@ img_size: 224
 interpolation: bicubic
 train_interpolation: random
 amp: True
-source_batch_size: 32
-target_batch_size: 32
-memory_batch_size: 32
-validation_batch_size: 128
+source_batch_size: 16
+target_batch_size: 16
+memory_batch_size: 16
+validation_batch_size: 32
 lr: 5e-5
 min_lr: 1e-6
 sched: cosine
