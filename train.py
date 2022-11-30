@@ -870,9 +870,9 @@ def train_one_epoch(
 
         if task > 0 or epoch >= args.epochs:
             with amp_autocast():
-                if task > 0:
-                    loss_a += torch.norm(torch.gradient(previous_k_w, dim=0)[0].mean(0).unsqueeze(0) * loss_i * (k_w - previous_k_w), p=1)
-                    loss_a += torch.norm(torch.gradient(previous_k_b, dim=0)[0].mean(0).unsqueeze(0) * loss_i * (k_b - previous_k_b), p=1)
+                # if task > 0:
+                    # loss_a += torch.norm(torch.gradient(previous_k_w, dim=0)[0].mean(0).unsqueeze(0) * loss_i * (k_w - previous_k_w), p=1)
+                    # loss_a += torch.norm(torch.gradient(previous_k_b, dim=0)[0].mean(0).unsqueeze(0) * loss_i * (k_b - previous_k_b), p=1)
 
                 try:
                     (source_memory, target_memory, label_memory, _, _, acc_source_logit, acc_target_logit) = next(dataloader_memory_iterator)
