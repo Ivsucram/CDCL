@@ -28,5 +28,5 @@ warmup_epochs: 25
 warmup_lr: 1e-5
 opt: adamw
 workers: 2
-tasks: 5
+tasks: 1 # 5 - Testing Barlow-Twins
 memory_size: 1000

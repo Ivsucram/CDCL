@@ -7,9 +7,9 @@ img_size: 224
 interpolation: bicubic
 train_interpolation: random
 amp: True
-source_batch_size: 16
-target_batch_size: 16
-memory_batch_size: 16
+source_batch_size: 1 # 16 - Testing Barlow-Twins
+target_batch_size: 1 # 16 - Testing Barlow-Twins
+memory_batch_size: 1 # 16 - Testing Barlow-Twins
 validation_batch_size: 32
 lr: 5e-5
 min_lr: 1e-6
@@ -20,5 +20,5 @@ warmup_epochs: 25
 warmup_lr: 1e-5
 opt: adamw
 workers: 2
-tasks: 4
+tasks: 1 # 4 - Testing Barlow-Twins
 memory_size: 1000

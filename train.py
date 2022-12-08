@@ -30,6 +30,8 @@ import torch.nn.functional as F
 import torchvision.utils
 import yaml
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
+import random
+from PIL import Image, ImageOps, ImageFilter
 
 from timm import utils
 from timm.loss import JsdCrossEntropy, SoftTargetCrossEntropy, BinaryCrossEntropy, \
@@ -39,6 +41,8 @@ from timm.models import create_model, safe_model_name, resume_checkpoint, load_c
 from timm.optim import create_optimizer_v2, optimizer_kwargs
 from timm.scheduler import create_scheduler
 from timm.utils import ApexScaler, NativeScaler
+
+import torchvision.transforms as transforms
 
 try:
     from apex import amp
@@ -384,8 +388,8 @@ def _parse_args(config_path=None):
 
 def main():
     utils.setup_default_logging()
-    args, args_text = _parse_args()
-    # args, args_text = _parse_args(config_path='configs/datasets/mnist_usps.yml') # Used during development
+    # args, args_text = _parse_args()
+    args, args_text = _parse_args(config_path='configs/datasets/visda.yml') # Used during development
 
     args.prefetcher = False
     args.distributed = False
@@ -600,7 +604,18 @@ def main():
             train_loss_fn = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
     else:
         train_loss_fn = nn.CrossEntropyLoss()
-    train_loss_fn = train_loss_fn.cuda()
+
+    param_weights = []
+    param_biases = []
+    for param in model.parameters():
+        if param.ndim == 1:
+            param_biases.append(param)
+        else:
+            param_weights.append(param)
+    parameters = [{'params': param_weights}, {'params': param_biases}]
+
+    train_loss_fn = LARS(parameters, lr=0)
+    # train_loss_fn = train_loss_fn.cuda()
     distil_loss_fn = DistilLoss().cuda()
     loss_kl_fn = nn.KLDivLoss(reduction="batchmean").cuda()
     # loss_kl_fn = nn.MSELoss().cuda()
@@ -629,39 +644,40 @@ def main():
         with open(os.path.join(output_dir, 'args.yaml'), 'w') as f:
             f.write(args_text)
 
-    cil1_R_matrix = torch.zeros((args.tasks, args.tasks))
-    til1_R_matrix = torch.zeros((args.tasks, args.tasks))
-    cil1_b_matrix = torch.zeros(args.tasks)
-    til1_b_matrix = torch.zeros(args.tasks)
+    # cil1_R_matrix = torch.zeros((args.tasks, args.tasks))
+    # til1_R_matrix = torch.zeros((args.tasks, args.tasks))
+    # cil1_b_matrix = torch.zeros(args.tasks)
+    # til1_b_matrix = torch.zeros(args.tasks)
 
-    cil5_R_matrix = torch.zeros((args.tasks, args.tasks))
-    til5_R_matrix = torch.zeros((args.tasks, args.tasks))
-    cil5_b_matrix = torch.zeros(args.tasks)
-    til5_b_matrix = torch.zeros(args.tasks)
+    # cil5_R_matrix = torch.zeros((args.tasks, args.tasks))
+    # til5_R_matrix = torch.zeros((args.tasks, args.tasks))
+    # cil5_b_matrix = torch.zeros(args.tasks)
+    # til5_b_matrix = torch.zeros(args.tasks)
 
     try:
+        pass
         for task in range(args.tasks):
-            (loader_source_train, _, loader_target_train, _, num_aug_splits, mixup_active, mixup_fn) = create_loaders(
-                dataset_source_train, dataset_source_eval, dataset_target_train, dataset_target_eval, data_config, args, task
-            )
+        #     (loader_source_train, _, loader_target_train, _, num_aug_splits, mixup_active, mixup_fn) = create_loaders(
+        #         dataset_source_train, dataset_source_eval, dataset_target_train, dataset_target_eval, data_config, args, task
+        #     )
 
             for epoch in range(start_epoch, num_epochs):
-                if args.distributed and hasattr(loader_source_train.sampler, 'set_epoch'):
-                    loader_source_train.sampler.set_epoch(epoch)
+        #         if args.distributed and hasattr(loader_source_train.sampler, 'set_epoch'):
+        #             loader_source_train.sampler.set_epoch(epoch)
 
-                if epoch == 0:
-                    (_, loader_source_eval, _, loader_target_eval, num_aug_splits, mixup_active, mixup_fn) = create_loaders(
-                        dataset_source_train, dataset_source_eval, dataset_target_train, dataset_target_eval, data_config, args, task
-                    )
+        #         if epoch == 0:
+        #             (_, loader_source_eval, _, loader_target_eval, num_aug_splits, mixup_active, mixup_fn) = create_loaders(
+        #                 dataset_source_train, dataset_source_eval, dataset_target_train, dataset_target_eval, data_config, args, task
+        #             )
 
-                    eval_metrics = validate(model, (loader_source_eval, loader_target_eval), validate_loss_fn, args, amp_autocast=amp_autocast, til_task=task, cil_task=task)
-                    cil1_b_matrix[task] = eval_metrics['cil_top1_t']
-                    til1_b_matrix[task] = eval_metrics['til_top1_t']
-                    cil5_b_matrix[task] = eval_metrics['cil_top5_t']
-                    til5_b_matrix[task] = eval_metrics['til_top5_t']
+        #             eval_metrics = validate(model, (loader_source_eval, loader_target_eval), validate_loss_fn, args, amp_autocast=amp_autocast, til_task=task, cil_task=task)
+        #             cil1_b_matrix[task] = eval_metrics['cil_top1_t']
+        #             til1_b_matrix[task] = eval_metrics['til_top1_t']
+        #             cil5_b_matrix[task] = eval_metrics['cil_top5_t']
+        #             til5_b_matrix[task] = eval_metrics['til_top5_t']
 
-                # if epoch == args.epochs:
-                #     memory_manager.increment_task()
+        #         # if epoch == args.epochs:
+        #         #     memory_manager.increment_task()
 
                 train_metrics = train_one_epoch(
                     epoch, model, (loader_source_train, loader_target_train), optimizer, (train_loss_fn, distil_loss_fn, loss_kl_fn), args,
@@ -669,84 +685,84 @@ def main():
                     amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn, task=task,
                     memory_manager=memory_manager, last_epoch = (epoch == num_epochs - 1))
 
-                if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                    if args.local_rank == 0:
-                        _logger.info("Distributing BatchNorm running means and vars")
-                    utils.distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
+        #         if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
+        #             if args.local_rank == 0:
+        #                 _logger.info("Distributing BatchNorm running means and vars")
+        #             utils.distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
 
-                for test_task in range(task+1):
+        #         for test_task in range(task+1):
 
-                    (_, loader_source_eval, _, loader_target_eval, num_aug_splits, mixup_active, mixup_fn) = create_loaders(
-                        dataset_source_train, dataset_source_eval, dataset_target_train, dataset_target_eval, data_config, args, test_task
-                    )
+        #             (_, loader_source_eval, _, loader_target_eval, num_aug_splits, mixup_active, mixup_fn) = create_loaders(
+        #                 dataset_source_train, dataset_source_eval, dataset_target_train, dataset_target_eval, data_config, args, test_task
+        #             )
 
-                    eval_metrics = validate(model, (loader_source_eval, loader_target_eval), validate_loss_fn, args, amp_autocast=amp_autocast, til_task=test_task, cil_task=task)
+        #             eval_metrics = validate(model, (loader_source_eval, loader_target_eval), validate_loss_fn, args, amp_autocast=amp_autocast, til_task=test_task, cil_task=task)
 
-                    if model_ema is not None and not args.model_ema_force_cpu:
-                        if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                            utils.distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
-                        ema_eval_metrics = validate(
-                            model_ema.module, (loader_source_eval, loader_target_eval), validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)', til_task=test_task, cil_task=task)
-                        eval_metrics = ema_eval_metrics
+        #             if model_ema is not None and not args.model_ema_force_cpu:
+        #                 if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
+        #                     utils.distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
+        #                 ema_eval_metrics = validate(
+        #                     model_ema.module, (loader_source_eval, loader_target_eval), validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)', til_task=test_task, cil_task=task)
+        #                 eval_metrics = ema_eval_metrics
 
-                    if lr_scheduler is not None:
-                        # step LR for next epoch
-                        lr_scheduler.step(epoch + 1, eval_metrics[eval_metric])
+        #             if lr_scheduler is not None:
+        #                 # step LR for next epoch
+        #                 lr_scheduler.step(epoch + 1, eval_metrics[eval_metric])
 
-                    if output_dir is not None:
-                        utils.update_summary(
-                            epoch, train_metrics, eval_metrics, os.path.join(output_dir, 'summary.csv'),
-                            write_header=best_metric is None, log_wandb=args.log_wandb and has_wandb, train_task=task, test_task=test_task)
+        #             if output_dir is not None:
+        #                 utils.update_summary(
+        #                     epoch, train_metrics, eval_metrics, os.path.join(output_dir, 'summary.csv'),
+        #                     write_header=best_metric is None, log_wandb=args.log_wandb and has_wandb, train_task=task, test_task=test_task)
 
-                    if epoch == num_epochs - 1:
-                        cil1_R_matrix[test_task][task] = eval_metrics['cil_top1_t']
-                        til1_R_matrix[test_task][task] = eval_metrics['til_top1_t']
-                        cil5_R_matrix[test_task][task] = eval_metrics['cil_top5_t']
-                        til5_R_matrix[test_task][task] = eval_metrics['til_top5_t']
+        #             if epoch == num_epochs - 1:
+        #                 cil1_R_matrix[test_task][task] = eval_metrics['cil_top1_t']
+        #                 til1_R_matrix[test_task][task] = eval_metrics['til_top1_t']
+        #                 cil5_R_matrix[test_task][task] = eval_metrics['cil_top5_t']
+        #                 til5_R_matrix[test_task][task] = eval_metrics['til_top5_t']
 
-                    # if saver is not None:
-                        # save proper checkpoint with eval metric
-                        # save_metric = eval_metrics[eval_metric]
-                        # best_metric, best_epoch = saver.save_checkpoint(epoch, metric=save_metric)
+        #             # if saver is not None:
+        #                 # save proper checkpoint with eval metric
+        #                 # save_metric = eval_metrics[eval_metric]
+        #                 # best_metric, best_epoch = saver.save_checkpoint(epoch, metric=save_metric)
 
     except KeyboardInterrupt:
         pass
 
-    cil_acc1, cil_fwt1, cil_bwt1, cil_fgt1 = cil1_R_matrix.T[-1].mean().item(), (cil1_R_matrix.T[-1][1:] - cil1_b_matrix[1:]).mean().item(), (cil1_R_matrix.T[-1][0:-1] - cil1_R_matrix.diagonal()[0:-1]).mean().item(), ((cil1_R_matrix[0:-1].T - cil1_R_matrix.T[-1][0:-1]).max(0)[0]).mean().item()
-    cil_acc5, cil_fwt5, cil_bwt5, cil_fgt5 = cil5_R_matrix.T[-1].mean().item(), (cil5_R_matrix.T[-1][1:] - cil5_b_matrix[1:]).mean().item(), (cil5_R_matrix.T[-1][0:-1] - cil5_R_matrix.diagonal()[0:-1]).mean().item(), ((cil5_R_matrix[0:-1].T - cil5_R_matrix.T[-1][0:-1]).max(0)[0]).mean().item()
-    til_acc1, til_fwt1, til_bwt1, til_fgt1 = til1_R_matrix.T[-1].mean().item(), (til1_R_matrix.T[-1][1:] - til1_b_matrix[1:]).mean().item(), (til1_R_matrix.T[-1][0:-1] - til1_R_matrix.diagonal()[0:-1]).mean().item(), ((til1_R_matrix[0:-1].T - til1_R_matrix.T[-1][0:-1]).max(0)[0]).mean().item()
-    til_acc5, til_fwt5, til_bwt5, til_fgt5 = til5_R_matrix.T[-1].mean().item(), (til5_R_matrix.T[-1][1:] - til5_b_matrix[1:]).mean().item(), (til5_R_matrix.T[-1][0:-1] - til5_R_matrix.diagonal()[0:-1]).mean().item(), ((til5_R_matrix[0:-1].T - til5_R_matrix.T[-1][0:-1]).max(0)[0]).mean().item()
+    # cil_acc1, cil_fwt1, cil_bwt1, cil_fgt1 = cil1_R_matrix.T[-1].mean().item(), (cil1_R_matrix.T[-1][1:] - cil1_b_matrix[1:]).mean().item(), (cil1_R_matrix.T[-1][0:-1] - cil1_R_matrix.diagonal()[0:-1]).mean().item(), ((cil1_R_matrix[0:-1].T - cil1_R_matrix.T[-1][0:-1]).max(0)[0]).mean().item()
+    # cil_acc5, cil_fwt5, cil_bwt5, cil_fgt5 = cil5_R_matrix.T[-1].mean().item(), (cil5_R_matrix.T[-1][1:] - cil5_b_matrix[1:]).mean().item(), (cil5_R_matrix.T[-1][0:-1] - cil5_R_matrix.diagonal()[0:-1]).mean().item(), ((cil5_R_matrix[0:-1].T - cil5_R_matrix.T[-1][0:-1]).max(0)[0]).mean().item()
+    # til_acc1, til_fwt1, til_bwt1, til_fgt1 = til1_R_matrix.T[-1].mean().item(), (til1_R_matrix.T[-1][1:] - til1_b_matrix[1:]).mean().item(), (til1_R_matrix.T[-1][0:-1] - til1_R_matrix.diagonal()[0:-1]).mean().item(), ((til1_R_matrix[0:-1].T - til1_R_matrix.T[-1][0:-1]).max(0)[0]).mean().item()
+    # til_acc5, til_fwt5, til_bwt5, til_fgt5 = til5_R_matrix.T[-1].mean().item(), (til5_R_matrix.T[-1][1:] - til5_b_matrix[1:]).mean().item(), (til5_R_matrix.T[-1][0:-1] - til5_R_matrix.diagonal()[0:-1]).mean().item(), ((til5_R_matrix[0:-1].T - til5_R_matrix.T[-1][0:-1]).max(0)[0]).mean().item()
 
-    print(f'{cil_acc1=:5.2f} {cil_fwt1=:5.2f} {cil_bwt1=:5.2f} {cil_fgt1=:5.2f}')
-    print(f'{cil_acc5=:5.2f} {cil_fwt5=:5.2f} {cil_bwt5=:5.2f} {cil_fgt5=:5.2f}')
-    print(f'{til_acc1=:5.2f} {til_fwt1=:5.2f} {til_bwt1=:5.2f} {til_fgt1=:5.2f}')
-    print(f'{til_acc5=:5.2f} {til_fwt5=:5.2f} {til_bwt5=:5.2f} {til_fgt5=:5.2f}')
+    # print(f'{cil_acc1=:5.2f} {cil_fwt1=:5.2f} {cil_bwt1=:5.2f} {cil_fgt1=:5.2f}')
+    # print(f'{cil_acc5=:5.2f} {cil_fwt5=:5.2f} {cil_bwt5=:5.2f} {cil_fgt5=:5.2f}')
+    # print(f'{til_acc1=:5.2f} {til_fwt1=:5.2f} {til_bwt1=:5.2f} {til_fgt1=:5.2f}')
+    # print(f'{til_acc5=:5.2f} {til_fwt5=:5.2f} {til_bwt5=:5.2f} {til_fgt5=:5.2f}')
 
-    if args.log_wandb:
-        rowd = OrderedDict()
-        rowd.update([('CIL ACC @ 1', cil_acc1)])
-        rowd.update([('CIL FWT @ 1', cil_fwt1)])
-        rowd.update([('CIL BWT @ 1', cil_bwt1)])
-        rowd.update([('CIL FGT @ 1', cil_fgt1)])
+    # if args.log_wandb:
+    #     rowd = OrderedDict()
+    #     rowd.update([('CIL ACC @ 1', cil_acc1)])
+    #     rowd.update([('CIL FWT @ 1', cil_fwt1)])
+    #     rowd.update([('CIL BWT @ 1', cil_bwt1)])
+    #     rowd.update([('CIL FGT @ 1', cil_fgt1)])
 
-        rowd.update([('CIL ACC @ 5', cil_acc5)])
-        rowd.update([('CIL FWT @ 5', cil_fwt5)])
-        rowd.update([('CIL BWT @ 5', cil_bwt5)])
-        rowd.update([('CIL FGT @ 5', cil_fgt5)])
+    #     rowd.update([('CIL ACC @ 5', cil_acc5)])
+    #     rowd.update([('CIL FWT @ 5', cil_fwt5)])
+    #     rowd.update([('CIL BWT @ 5', cil_bwt5)])
+    #     rowd.update([('CIL FGT @ 5', cil_fgt5)])
 
-        rowd.update([('TIL ACC @ 1', til_acc1)])
-        rowd.update([('TIL FWT @ 1', til_fwt1)])
-        rowd.update([('TIL BWT @ 1', til_bwt1)])
-        rowd.update([('TIL FGT @ 1', til_fgt1)])
+    #     rowd.update([('TIL ACC @ 1', til_acc1)])
+    #     rowd.update([('TIL FWT @ 1', til_fwt1)])
+    #     rowd.update([('TIL BWT @ 1', til_bwt1)])
+    #     rowd.update([('TIL FGT @ 1', til_fgt1)])
 
-        rowd.update([('TIL ACC @ 5', til_acc5)])
-        rowd.update([('TIL FWT @ 5', til_fwt5)])
-        rowd.update([('TIL BWT @ 5', til_bwt5)])
-        rowd.update([('TIL FGT @ 5', til_fgt5)])
-        wandb.log(rowd)
+    #     rowd.update([('TIL ACC @ 5', til_acc5)])
+    #     rowd.update([('TIL FWT @ 5', til_fwt5)])
+    #     rowd.update([('TIL BWT @ 5', til_bwt5)])
+    #     rowd.update([('TIL FGT @ 5', til_fgt5)])
+    #     wandb.log(rowd)
 
-    if best_metric is not None:
-        _logger.info('*** Best metric: {0} (epoch {1})'.format(best_metric, best_epoch))
+    # if best_metric is not None:
+    #     _logger.info('*** Best metric: {0} (epoch {1})'.format(best_metric, best_epoch))
 
 
 def train_one_epoch(
@@ -769,12 +785,7 @@ def train_one_epoch(
     second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
     batch_time_m = utils.AverageMeter()
     sample_pairs_m = utils.AverageMeter()
-    losses_accumulator_s_m = utils.AverageMeter()
-    losses_accumulator_t_m = utils.AverageMeter()
-    losses_accumulator_d_m = utils.AverageMeter()
-    losses_accumulator_i_m = utils.AverageMeter()
-    losses_accumulator_a_m = utils.AverageMeter()
-    losses_accumulator_r_m = utils.AverageMeter()
+    loss_accumulator = utils.AverageMeter()
 
     mask = torch.zeros(args.num_classes).cuda()
     for i in range(mask.size(0)):
@@ -786,11 +797,6 @@ def train_one_epoch(
     end = time.time()
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
-    dataloader_target_iterator = iter(loader_target)
-    
-    loader_memory = memory_manager.dataset_loader(task=task-1, mix_tasks=True) if task > 0 else None
-    if loader_memory is not None:
-        dataloader_memory_iterator = iter(loader_memory)
 
     for batch_idx, (input_source, label_source, _) in enumerate(loader):
         last_batch = batch_idx == last_idx
@@ -801,100 +807,11 @@ def train_one_epoch(
         if args.channels_last:
             input_source = input_source.contiguous(memory_format=torch.channels_last)
 
-        loss_s, loss_t, loss_d = torch.zeros(1).cuda(), torch.zeros(1).cuda(), torch.zeros(1).cuda() # source, target, distil
-        loss_a, loss_i, loss_r = torch.zeros(1).cuda(), torch.zeros(1).cuda(), torch.zeros(1).cuda() # accumulator, injection, replay
-        if epoch >= args.warmup_epochs:
-            if batch_idx == 0:
-                _logger.info('Computing pseudo-labels centroids')
-                center_aware_pseudo_module = CenterAwarePseudoModule(model, loader_target, task=task, args=args)
-                model.train()
-                # if last_epoch:
-                if epoch >= args.epochs:
-                    _logger.info('Slower epoch: Saving confident paired samples into memory')
-
-            with amp_autocast():
-                try:
-                    (input_target, _, _) = next(dataloader_target_iterator)
-                except StopIteration:
-                    dataloader_target_iterator = iter(loader_target)
-                    (input_target, _, _) = next(dataloader_target_iterator)
-                if not args.prefetcher:
-                    input_target = input_target.cuda()
-                if args.channels_last:
-                    input_target = input_source.contiguous(memory_format=torch.channels_last)
-
-                (inj_input_source, inj_input_target, inj_label_source), (acc_input_source, acc_input_target, acc_label_source) = center_aware_pseudo_module.reorder_datasets2(model, input_source, label_source, input_target, task=task)
-                model.train()
-                
-                if inj_input_source is None:
-                    sample_pairs_m.update(0)
-                    injection_output, accumulator_output, _, previous_k_w, (k_w, k_b) = model(input_source, task=task)
-                    accumulator_output = accumulator_output * torch.transpose(mask, 0, 0)
-                    loss_i += loss_cross_entropy_fn(injection_output, label_source - (args.num_classes // args.tasks * task))
-                    loss_s += loss_cross_entropy_fn(accumulator_output, label_source)
-                else:    
-                    sample_pairs_m.update(input_source.size(0))
-
-                    ((injection_output, injection_output_target, injection_output_fusion),
-                    (accumulator_output, accumulator_output_target, accumulator_output_fusion),
-                    _,
-                    (previous_k_w, previous_k_b),
-                    (k_w, k_b)) = model(inj_input_source, inj_input_target, task=task)
-
-                    accumulator_output, accumulator_output_target, accumulator_output_fusion = accumulator_output * torch.transpose(mask, 0, 0), accumulator_output_target * torch.transpose(mask, 0, 0), accumulator_output_fusion * torch.transpose(mask, 0, 0)
-
-                    loss_s += loss_cross_entropy_fn(accumulator_output, inj_label_source)
-                    loss_t += loss_cross_entropy_fn(accumulator_output_target, inj_label_source)
-                    loss_d += loss_distil_fn(accumulator_output_target, accumulator_output_fusion)
-
-                    loss_i += loss_cross_entropy_fn(injection_output, inj_label_source - (args.num_classes // args.tasks * task))
-                    loss_i += loss_cross_entropy_fn(injection_output_target, inj_label_source - (args.num_classes // args.tasks * task))
-                    loss_i += loss_distil_fn(injection_output_target, injection_output_fusion)
-
-                # if last_epoch and inj_input_source is not None:
-                if epoch >= args.epochs and inj_input_source is not None:
-                    if batch_idx == 0:
-                        memory_manager.zero_task(task)
-                    for xs, xt, ys, ils, ilt, als, alt in zip(inj_input_source, inj_input_target, inj_label_source, injection_output, injection_output_target, accumulator_output, accumulator_output_target):
-                        memory_manager.add_sample(xs, xt, ys, ils, ilt, als, alt, task)
-        else:
-            with amp_autocast():
-                injection_output, accumulator_output, _, (previous_k_w, previous_k_b), (k_w, k_b) = model(input_source, task=task)
-                accumulator_output = accumulator_output * torch.transpose(mask, 0, 0)
-                loss_i += loss_cross_entropy_fn(injection_output, label_source - (args.num_classes // args.tasks * task))
-                loss_s += loss_cross_entropy_fn(accumulator_output, label_source)
-
-        if epoch >= args.epochs:
-            loader_memory = memory_manager.dataset_loader(task=task, mix_tasks=True)
-            dataloader_memory_iterator = iter(loader_memory)
-
-        if task > 0 or epoch >= args.epochs:
-            with amp_autocast():
-                # if task > 0:
-                    # loss_a += torch.norm(torch.gradient(previous_k_w, dim=0)[0].mean(0).unsqueeze(0) * loss_i * (k_w - previous_k_w), p=1)
-                    # loss_a += torch.norm(torch.gradient(previous_k_b, dim=0)[0].mean(0).unsqueeze(0) * loss_i * (k_b - previous_k_b), p=1)
-
-                try:
-                    (source_memory, target_memory, label_memory, _, _, acc_source_logit, acc_target_logit) = next(dataloader_memory_iterator)
-                except StopIteration:
-                    dataloader_memory_iterator = iter(loader_memory)
-                    (source_memory, target_memory, label_memory, _, _, acc_source_logit, acc_target_logit) = next(dataloader_memory_iterator)
-
-                source_memory, target_memory, label_memory = source_memory.cuda(), target_memory.cuda(), label_memory.cuda()
-                acc_source_logit, acc_target_logit = acc_source_logit.cuda(), acc_target_logit.cuda()
-
-                (_, (acc_memory_output, acc_memory_output_target, acc_memory_output_fusion), _, _, _) = model(source_memory, target_memory, task=task)
-
-                acc_memory_output, acc_memory_output_target, acc_memory_output_fusion = acc_memory_output * torch.transpose(mask, 0, 0), acc_memory_output_target * torch.transpose(mask, 0, 0), acc_memory_output_fusion * torch.transpose(mask, 0, 0)
-
-                loss_r += loss_kl_fn(F.softmax(acc_memory_output, dim=-1), F.softmax(acc_source_logit, dim=-1))
-                loss_r += loss_kl_fn(F.softmax(acc_memory_output_target, dim=-1), F.softmax(acc_target_logit, dim=-1))
-                loss_r += loss_cross_entropy_fn(acc_memory_output, label_memory)
-                loss_r += loss_cross_entropy_fn(acc_memory_output_target, label_memory)
-                loss_r += loss_distil_fn(acc_memory_output_target, acc_memory_output_fusion)
-
-        alpha_1, alpha_2, alpha_3, alpha_4, alpha_5, alpha_6 = args.alpha_1, args.alpha_2, args.alpha_3, args.alpha_4, args.alpha_5, args.alpha_6
-        loss = alpha_1 * loss_s + alpha_2 * loss_t + alpha_3 * loss_d + alpha_4 * loss_a + alpha_5 * loss_i + alpha_6 * loss_r
+        loss = torch.zeros(1).cuda()
+        
+        with amp_autocast():
+            y1, y2 = Transform()(input_source)
+            loss = model(y1, y2)
 
         optimizer.zero_grad()
         if loss_scaler is not None:
@@ -912,12 +829,7 @@ def train_one_epoch(
             optimizer.step()
 
         if not args.distributed:
-            losses_accumulator_s_m.update(loss_s.item(), input_source.size(0))
-            losses_accumulator_t_m.update(loss_t.item(), input_source.size(0))
-            losses_accumulator_d_m.update(loss_d.item(), input_source.size(0))
-            losses_accumulator_i_m.update(loss_i.item(), input_source.size(0))
-            losses_accumulator_a_m.update(loss_a.item(), input_source.size(0))
-            losses_accumulator_r_m.update(loss_r.item(), input_source.size(0))
+            loss_accumulator.update(loss.item(), input_source.size(0))
 
         if model_ema is not None:
             model_ema.update(model)
@@ -931,58 +843,24 @@ def train_one_epoch(
 
             if args.distributed:
                 reduced_loss = utils.reduce_tensor(loss.data, args.world_size)
-                losses_accumulator_s_m.update(reduced_loss.item(), input_source.size(0))
+                loss_accumulator.update(loss.item(), input_source.size(0))
 
             if True: #args.local_rank == 0:
-                if epoch >= args.warmup_epochs:
-                    _logger.info(
-                        'Task {0} '
-                        'Train: {1} [{2:>4d}/{3} ({4:>3.0f}%)]  '
-                        'Loss_s: {loss_s.val:#.4g} ({loss_s.avg:#.3g})  '
-                        'Loss_t: {loss_t.val:#.4g} ({loss_t.avg:#.3g})  '
-                        'Loss_d: {loss_d.val:#.4g} ({loss_d.avg:#.3g})  '
-                        'Loss_i: {loss_i.val:#.4g} ({loss_i.avg:#.3g})  '
-                        'Loss_a: {loss_a.val:#.4g} ({loss_a.avg:#.3g})  '
-                        'Loss_r: {loss_r.val:#.4g} ({loss_r.avg:#.3g})  '
-                        'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
-                        '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
-                        'LR: {lr:.3e}   '
-                        'Pairs: {pairs.val}/{pairs.sum} ({pairs.avg:#.3g})'.format(
-                            task, epoch,
-                            batch_idx, len(loader),
-                            100. * batch_idx / last_idx,
-                            loss_s=losses_accumulator_s_m,
-                            loss_t=losses_accumulator_t_m,
-                            loss_d=losses_accumulator_d_m,
-                            loss_i=losses_accumulator_i_m,
-                            loss_a=losses_accumulator_a_m,
-                            loss_r=losses_accumulator_r_m,
-                            batch_time=batch_time_m,
-                            rate=input_source.size(0) * args.world_size / batch_time_m.val,
-                            rate_avg=input_source.size(0) * args.world_size / batch_time_m.avg,
-                            lr=lr, pairs=sample_pairs_m))
-                else:
-                    _logger.info(
-                        'Task {0} '
-                        'Train: {1} [{2:>4d}/{3} ({4:>3.0f}%)]  '
-                        'Loss_s: {loss_s.val:#.4g} ({loss_s.avg:#.3g})  '
-                        'Loss_i: {loss_i.val:#.4g} ({loss_i.avg:#.3g})  '
-                        'Loss_a: {loss_a.val:#.4g} ({loss_a.avg:#.3g})  '
-                        'Loss_r: {loss_r.val:#.4g} ({loss_r.avg:#.3g})  '
-                        'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
-                        '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
-                        'LR: {lr:.3e}'.format(
-                            task, epoch,
-                            batch_idx, len(loader),
-                            100. * batch_idx / last_idx,
-                            loss_s=losses_accumulator_s_m,
-                            loss_i=losses_accumulator_i_m,
-                            loss_a=losses_accumulator_a_m,
-                            loss_r=losses_accumulator_r_m,
-                            batch_time=batch_time_m,
-                            rate=input_source.size(0) * args.world_size / batch_time_m.val,
-                            rate_avg=input_source.size(0) * args.world_size / batch_time_m.avg,
-                            lr=lr))
+                _logger.info(
+                    'Task {0} '
+                    'Train: {1} [{2:>4d}/{3} ({4:>3.0f}%)]  '
+                    'Loss: {loss.val:#.4g} ({loss.avg:#.3g})  '
+                    'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
+                    '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
+                    'LR: {lr:.3e}'.format(
+                        task, epoch,
+                        batch_idx, len(loader),
+                        100. * batch_idx / last_idx,
+                        loss=loss_accumulator,
+                        batch_time=batch_time_m,
+                        rate=input_source.size(0) * args.world_size / batch_time_m.val,
+                        rate_avg=input_source.size(0) * args.world_size / batch_time_m.avg,
+                        lr=lr))
 
                 if args.save_images and output_dir:
                     torchvision.utils.save_image(
@@ -996,7 +874,7 @@ def train_one_epoch(
             saver.save_recovery(epoch, batch_idx=batch_idx)
 
         if lr_scheduler is not None:
-            lr_scheduler.step_update(num_updates=num_updates, metric=losses_accumulator_s_m.avg)
+            lr_scheduler.step_update(num_updates=num_updates, metric=loss_accumulator.avg)
 
         end = time.time()
         # end for
@@ -1004,187 +882,289 @@ def train_one_epoch(
     if hasattr(optimizer, 'sync_lookahead'):
         optimizer.sync_lookahead()
 
-    return OrderedDict([('loss', losses_accumulator_s_m.avg)])
+    return OrderedDict([('loss', loss_accumulator.avg)])
 
 
-def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='', til_task=0, cil_task=0):
-    batch_time_m = utils.AverageMeter()
-    cil_losses_s_m = utils.AverageMeter()
-    cil_losses_t_m = utils.AverageMeter()
-    til_losses_s_m = utils.AverageMeter()
-    til_losses_t_m = utils.AverageMeter()
-    cil_top1_s_m = utils.AverageMeter()
-    cil_top5_s_m = utils.AverageMeter()
-    cil_top1_t_m = utils.AverageMeter()
-    cil_top5_t_m = utils.AverageMeter()
-    til_top1_s_m = utils.AverageMeter()
-    til_top5_s_m = utils.AverageMeter()
-    til_top1_t_m = utils.AverageMeter()
-    til_top5_t_m = utils.AverageMeter()
+# def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='', til_task=0, cil_task=0):
+#     batch_time_m = utils.AverageMeter()
+#     cil_losses_s_m = utils.AverageMeter()
+#     cil_losses_t_m = utils.AverageMeter()
+#     til_losses_s_m = utils.AverageMeter()
+#     til_losses_t_m = utils.AverageMeter()
+#     cil_top1_s_m = utils.AverageMeter()
+#     cil_top5_s_m = utils.AverageMeter()
+#     cil_top1_t_m = utils.AverageMeter()
+#     cil_top5_t_m = utils.AverageMeter()
+#     til_top1_s_m = utils.AverageMeter()
+#     til_top5_s_m = utils.AverageMeter()
+#     til_top1_t_m = utils.AverageMeter()
+#     til_top5_t_m = utils.AverageMeter()
 
-    loader_target = loader[1]
-    loader = loader[0]
+#     loader_target = loader[1]
+#     loader = loader[0]
 
-    model.eval()
+#     model.eval()
 
-    end = time.time()
-    last_idx = len(loader_target) - 1
-    with torch.no_grad():
-        for batch_idx, (input, label, _) in enumerate(loader_target):
-            last_batch = batch_idx == last_idx
-            if not args.prefetcher:
-                input, label = input.cuda(), label.cuda()
-            if args.channels_last:
-                input = input.contiguous(memory_format=torch.channels_last)
+#     end = time.time()
+#     last_idx = len(loader_target) - 1
+#     with torch.no_grad():
+#         for batch_idx, (input, label, _) in enumerate(loader_target):
+#             last_batch = batch_idx == last_idx
+#             if not args.prefetcher:
+#                 input, label = input.cuda(), label.cuda()
+#             if args.channels_last:
+#                 input = input.contiguous(memory_format=torch.channels_last)
 
-            with amp_autocast():
-                _, cil_output, _, _, _ = model(input, task=cil_task)
-                til_output, _, _, _, _ = model(input, task=til_task)
-            if isinstance(cil_output, (tuple, list)): cil_output = cil_output[0]
-            if isinstance(til_output, (tuple, list)): til_output = til_output[0]
+#             with amp_autocast():
+#                 _, cil_output, _, _, _ = model(input, task=cil_task)
+#                 til_output, _, _, _, _ = model(input, task=til_task)
+#             if isinstance(cil_output, (tuple, list)): cil_output = cil_output[0]
+#             if isinstance(til_output, (tuple, list)): til_output = til_output[0]
 
-            # augmentation reduction
-            reduce_factor = args.tta
-            if reduce_factor > 1:
-                cil_output = cil_output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
-                til_output = til_output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
-                label = label[0:label.size(0):reduce_factor]
+#             # augmentation reduction
+#             reduce_factor = args.tta
+#             if reduce_factor > 1:
+#                 cil_output = cil_output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+#                 til_output = til_output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+#                 label = label[0:label.size(0):reduce_factor]
 
-            loss_cil = loss_fn(cil_output, label)
-            loss_til = loss_fn(til_output, label - (args.num_classes // args.tasks * til_task))
-            cil_acc1, cil_acc5 = utils.accuracy(cil_output, label, topk=(1, 5))
-            til_acc1, til_acc5 = utils.accuracy(til_output, label - (args.num_classes // args.tasks * til_task), topk=(1, 5))
+#             loss_cil = loss_fn(cil_output, label)
+#             loss_til = loss_fn(til_output, label - (args.num_classes // args.tasks * til_task))
+#             cil_acc1, cil_acc5 = utils.accuracy(cil_output, label, topk=(1, 5))
+#             til_acc1, til_acc5 = utils.accuracy(til_output, label - (args.num_classes // args.tasks * til_task), topk=(1, 5))
 
-            if args.distributed:
-                reduced_loss_cil = utils.reduce_tensor(loss_cil.data, args.world_size)
-                cil_acc1 = utils.reduce_tensor(cil_acc1, args.world_size)
-                cil_acc5 = utils.reduce_tensor(cil_acc5, args.world_size)
-            else:
-                reduced_loss_cil = loss_cil.data
+#             if args.distributed:
+#                 reduced_loss_cil = utils.reduce_tensor(loss_cil.data, args.world_size)
+#                 cil_acc1 = utils.reduce_tensor(cil_acc1, args.world_size)
+#                 cil_acc5 = utils.reduce_tensor(cil_acc5, args.world_size)
+#             else:
+#                 reduced_loss_cil = loss_cil.data
 
-            cil_losses_t_m.update(reduced_loss_cil.item(), input.size(0))
-            cil_top1_t_m.update(cil_acc1.item(), cil_output.size(0))
-            cil_top5_t_m.update(cil_acc5.item(), cil_output.size(0))
+#             cil_losses_t_m.update(reduced_loss_cil.item(), input.size(0))
+#             cil_top1_t_m.update(cil_acc1.item(), cil_output.size(0))
+#             cil_top5_t_m.update(cil_acc5.item(), cil_output.size(0))
 
-            if args.distributed:
-                reduced_loss_til = utils.reduce_tensor(loss_til.data, args.world_size)
-                til_acc1 = utils.reduce_tensor(til_acc1, args.world_size)
-                til_acc5 = utils.reduce_tensor(til_acc5, args.world_size)
-            else:
-                reduced_loss_til = loss_til.data
+#             if args.distributed:
+#                 reduced_loss_til = utils.reduce_tensor(loss_til.data, args.world_size)
+#                 til_acc1 = utils.reduce_tensor(til_acc1, args.world_size)
+#                 til_acc5 = utils.reduce_tensor(til_acc5, args.world_size)
+#             else:
+#                 reduced_loss_til = loss_til.data
 
-            torch.cuda.synchronize()
+#             torch.cuda.synchronize()
 
-            til_losses_t_m.update(reduced_loss_til.item(), input.size(0))
-            til_top1_t_m.update(til_acc1.item(), til_output.size(0))
-            til_top5_t_m.update(til_acc5.item(), til_output.size(0))
+#             til_losses_t_m.update(reduced_loss_til.item(), input.size(0))
+#             til_top1_t_m.update(til_acc1.item(), til_output.size(0))
+#             til_top5_t_m.update(til_acc5.item(), til_output.size(0))
 
-            batch_time_m.update(time.time() - end)
-            end = time.time()
-            if last_batch or batch_idx % args.log_interval == 0:
-                log_name = f'TestT {til_task}' + log_suffix
-                _logger.info(
-                    '{0}: [{1:>4d}/{2} ({3:>3.0f}%)]  '
-                    'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
-                    'CIL_Loss_t: {cil_loss_t.avg:>6.4f}  '
-                    'CIL_Acc_t@1: {cil_top1t.avg:>7.4f}  '
-                    'TIL_Loss_t: {til_loss_t.avg:>6.4f}  '
-                    'TIL_Acc_t@1: {til_top1t.avg:>7.4f}'.format(
-                        log_name, batch_idx, last_idx, 100. * batch_idx / last_idx,
-                        batch_time=batch_time_m,
-                        cil_loss_t=cil_losses_t_m, til_loss_t=til_losses_t_m,
-                        cil_top1t=cil_top1_t_m, til_top1t=til_top1_t_m))
+#             batch_time_m.update(time.time() - end)
+#             end = time.time()
+#             if last_batch or batch_idx % args.log_interval == 0:
+#                 log_name = f'TestT {til_task}' + log_suffix
+#                 _logger.info(
+#                     '{0}: [{1:>4d}/{2} ({3:>3.0f}%)]  '
+#                     'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
+#                     'CIL_Loss_t: {cil_loss_t.avg:>6.4f}  '
+#                     'CIL_Acc_t@1: {cil_top1t.avg:>7.4f}  '
+#                     'TIL_Loss_t: {til_loss_t.avg:>6.4f}  '
+#                     'TIL_Acc_t@1: {til_top1t.avg:>7.4f}'.format(
+#                         log_name, batch_idx, last_idx, 100. * batch_idx / last_idx,
+#                         batch_time=batch_time_m,
+#                         cil_loss_t=cil_losses_t_m, til_loss_t=til_losses_t_m,
+#                         cil_top1t=cil_top1_t_m, til_top1t=til_top1_t_m))
 
-    end = time.time()
-    last_idx = len(loader) - 1
-    with torch.no_grad():
-        for batch_idx, (input, label, _) in enumerate(loader):
-            last_batch = batch_idx == last_idx
-            if not args.prefetcher:
-                input, label = input.cuda(), label.cuda()
-            if args.channels_last:
-                input = input.contiguous(memory_format=torch.channels_last)
+#     end = time.time()
+#     last_idx = len(loader) - 1
+#     with torch.no_grad():
+#         for batch_idx, (input, label, _) in enumerate(loader):
+#             last_batch = batch_idx == last_idx
+#             if not args.prefetcher:
+#                 input, label = input.cuda(), label.cuda()
+#             if args.channels_last:
+#                 input = input.contiguous(memory_format=torch.channels_last)
 
-            with amp_autocast():
-                _, cil_output, _, _, _ = model(input, task=cil_task)
-                til_output, _, _, _, _ = model(input, task=til_task)
-            if isinstance(cil_output, (tuple, list)): cil_output = cil_output[0]
-            if isinstance(til_output, (tuple, list)): til_output = til_output[0]
+#             with amp_autocast():
+#                 _, cil_output, _, _, _ = model(input, task=cil_task)
+#                 til_output, _, _, _, _ = model(input, task=til_task)
+#             if isinstance(cil_output, (tuple, list)): cil_output = cil_output[0]
+#             if isinstance(til_output, (tuple, list)): til_output = til_output[0]
 
-            # augmentation reduction
-            reduce_factor = args.tta
-            if reduce_factor > 1:
-                cil_output = cil_output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
-                til_output = til_output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
-                label = label[0:label.size(0):reduce_factor]
+#             # augmentation reduction
+#             reduce_factor = args.tta
+#             if reduce_factor > 1:
+#                 cil_output = cil_output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+#                 til_output = til_output.unfold(0, reduce_factor, reduce_factor).mean(dim=2)
+#                 label = label[0:label.size(0):reduce_factor]
 
-            loss_cil = loss_fn(cil_output, label)
-            loss_til = loss_fn(til_output, label - (args.num_classes // args.tasks * til_task))
-            cil_acc1, cil_acc5 = utils.accuracy(cil_output, label, topk=(1, 5))
-            til_acc1, til_acc5 = utils.accuracy(til_output, label - (args.num_classes // args.tasks * til_task), topk=(1, 5))
+#             loss_cil = loss_fn(cil_output, label)
+#             loss_til = loss_fn(til_output, label - (args.num_classes // args.tasks * til_task))
+#             cil_acc1, cil_acc5 = utils.accuracy(cil_output, label, topk=(1, 5))
+#             til_acc1, til_acc5 = utils.accuracy(til_output, label - (args.num_classes // args.tasks * til_task), topk=(1, 5))
 
-            if args.distributed:
-                reduced_loss_cil = utils.reduce_tensor(loss_cil.data, args.world_size)
-                cil_acc1 = utils.reduce_tensor(cil_acc1, args.world_size)
-                cil_acc5 = utils.reduce_tensor(cil_acc5, args.world_size)
-            else:
-                reduced_loss_cil = loss_cil.data
+#             if args.distributed:
+#                 reduced_loss_cil = utils.reduce_tensor(loss_cil.data, args.world_size)
+#                 cil_acc1 = utils.reduce_tensor(cil_acc1, args.world_size)
+#                 cil_acc5 = utils.reduce_tensor(cil_acc5, args.world_size)
+#             else:
+#                 reduced_loss_cil = loss_cil.data
 
-            cil_losses_s_m.update(reduced_loss_cil.item(), input.size(0))
-            cil_top1_s_m.update(cil_acc1.item(), cil_output.size(0))
-            cil_top5_s_m.update(cil_acc5.item(), cil_output.size(0))
+#             cil_losses_s_m.update(reduced_loss_cil.item(), input.size(0))
+#             cil_top1_s_m.update(cil_acc1.item(), cil_output.size(0))
+#             cil_top5_s_m.update(cil_acc5.item(), cil_output.size(0))
 
-            if args.distributed:
-                reduced_loss_til = utils.reduce_tensor(loss_til.data, args.world_size)
-                til_acc1 = utils.reduce_tensor(til_acc1, args.world_size)
-                til_acc5 = utils.reduce_tensor(til_acc5, args.world_size)
-            else:
-                reduced_loss_til = loss_til.data
+#             if args.distributed:
+#                 reduced_loss_til = utils.reduce_tensor(loss_til.data, args.world_size)
+#                 til_acc1 = utils.reduce_tensor(til_acc1, args.world_size)
+#                 til_acc5 = utils.reduce_tensor(til_acc5, args.world_size)
+#             else:
+#                 reduced_loss_til = loss_til.data
 
-            torch.cuda.synchronize()
+#             torch.cuda.synchronize()
 
-            til_losses_s_m.update(reduced_loss_til.item(), input.size(0))
-            til_top1_s_m.update(til_acc1.item(), til_output.size(0))
-            til_top5_s_m.update(til_acc5.item(), til_output.size(0))
+#             til_losses_s_m.update(reduced_loss_til.item(), input.size(0))
+#             til_top1_s_m.update(til_acc1.item(), til_output.size(0))
+#             til_top5_s_m.update(til_acc5.item(), til_output.size(0))
 
-            batch_time_m.update(time.time() - end)
-            end = time.time()
-            if last_batch or batch_idx % args.log_interval == 0:
-                log_name = f'TestS {til_task}'  + log_suffix
-                _logger.info(
-                    '{0}: [{1:>4d}/{2} ({3:>3.0f}%)]  '
-                    'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
-                    'CIL_Loss_s: {cil_loss_s.avg:>6.4f}  '
-                    'CIL_Acc_s@1: {cil_top1s.avg:>7.4f}  '
-                    'TIL_Loss_s: {til_loss_s.avg:>6.4f}  '
-                    'TIL_Acc_s@1: {til_top1s.avg:>7.4f}  '
-                    'CIL_Loss_t: {cil_loss_t.avg:>6.4f}  '
-                    'CIL_Acc_t@1: {cil_top1t.avg:>7.4f}  '
-                    'TIL_Loss_t: {til_loss_t.avg:>6.4f}  '
-                    'TIL_Acc_t@1: {til_top1t.avg:>7.4f}'.format(
-                        log_name, batch_idx, last_idx, 100. * batch_idx / last_idx,
-                        batch_time=batch_time_m,
-                        cil_loss_s=cil_losses_s_m, cil_loss_t=cil_losses_t_m,
-                        til_loss_s=til_losses_s_m, til_loss_t=til_losses_t_m,
-                        cil_top1s=cil_top1_s_m, cil_top1t=cil_top1_t_m,
-                        til_top1s=til_top1_s_m, til_top1t=til_top1_t_m))
+#             batch_time_m.update(time.time() - end)
+#             end = time.time()
+#             if last_batch or batch_idx % args.log_interval == 0:
+#                 log_name = f'TestS {til_task}'  + log_suffix
+#                 _logger.info(
+#                     '{0}: [{1:>4d}/{2} ({3:>3.0f}%)]  '
+#                     'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
+#                     'CIL_Loss_s: {cil_loss_s.avg:>6.4f}  '
+#                     'CIL_Acc_s@1: {cil_top1s.avg:>7.4f}  '
+#                     'TIL_Loss_s: {til_loss_s.avg:>6.4f}  '
+#                     'TIL_Acc_s@1: {til_top1s.avg:>7.4f}  '
+#                     'CIL_Loss_t: {cil_loss_t.avg:>6.4f}  '
+#                     'CIL_Acc_t@1: {cil_top1t.avg:>7.4f}  '
+#                     'TIL_Loss_t: {til_loss_t.avg:>6.4f}  '
+#                     'TIL_Acc_t@1: {til_top1t.avg:>7.4f}'.format(
+#                         log_name, batch_idx, last_idx, 100. * batch_idx / last_idx,
+#                         batch_time=batch_time_m,
+#                         cil_loss_s=cil_losses_s_m, cil_loss_t=cil_losses_t_m,
+#                         til_loss_s=til_losses_s_m, til_loss_t=til_losses_t_m,
+#                         cil_top1s=cil_top1_s_m, cil_top1t=cil_top1_t_m,
+#                         til_top1s=til_top1_s_m, til_top1t=til_top1_t_m))
 
-    metrics = OrderedDict([('task', cil_task),
-            	           ('cil_loss_s', cil_losses_s_m.avg),
-                           ('cil_loss_t', cil_losses_t_m.avg),
-                           ('til_loss_s', til_losses_s_m.avg),
-                           ('til_loss_t', til_losses_t_m.avg),
-                           ('cil_top1_s', cil_top1_s_m.avg),
-                           ('cil_top5_s', cil_top5_s_m.avg),
-                           ('cil_top1_t', cil_top1_t_m.avg),
-                           ('cil_top5_t', cil_top5_t_m.avg),
-                           ('til_top1_s', til_top1_s_m.avg),
-                           ('til_top5_s', til_top5_s_m.avg),
-                           ('til_top1_t', til_top1_t_m.avg),
-                           ('til_top5_t', til_top5_t_m.avg)])
+#     metrics = OrderedDict([('task', cil_task),
+#             	           ('cil_loss_s', cil_losses_s_m.avg),
+#                            ('cil_loss_t', cil_losses_t_m.avg),
+#                            ('til_loss_s', til_losses_s_m.avg),
+#                            ('til_loss_t', til_losses_t_m.avg),
+#                            ('cil_top1_s', cil_top1_s_m.avg),
+#                            ('cil_top5_s', cil_top5_s_m.avg),
+#                            ('cil_top1_t', cil_top1_t_m.avg),
+#                            ('cil_top5_t', cil_top5_t_m.avg),
+#                            ('til_top1_s', til_top1_s_m.avg),
+#                            ('til_top5_s', til_top5_s_m.avg),
+#                            ('til_top1_t', til_top1_t_m.avg),
+#                            ('til_top5_t', til_top5_t_m.avg)])
 
-    return metrics
+#     return metrics
 
+
+class GaussianBlur(object):
+    def __init__(self, p):
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() < self.p:
+            sigma = random.random() * 1.9 + 0.1
+            return img.filter(ImageFilter.GaussianBlur(sigma))
+        else:
+            return img
+
+
+class Solarization(object):
+    def __init__(self, p):
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() < self.p:
+            return ImageOps.solarize(img)
+        else:
+            return img
+
+class Transform:
+    def __init__(self):
+        self.transform = transforms.Compose([
+            transforms.RandomResizedCrop(224, interpolation=Image.BICUBIC),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomApply(
+                [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                        saturation=0.2, hue=0.1)],
+                p=0.8
+            ),
+            transforms.RandomGrayscale(p=0.2),
+            GaussianBlur(p=1.0),
+            Solarization(p=0.0),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225])
+        ])
+        self.transform_prime = transforms.Compose([
+            transforms.RandomResizedCrop(224, interpolation=Image.BICUBIC),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomApply(
+                [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                        saturation=0.2, hue=0.1)],
+                p=0.8
+            ),
+            transforms.RandomGrayscale(p=0.2),
+            GaussianBlur(p=0.1),
+            Solarization(p=0.2),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225])
+        ])
+
+    def __call__(self, x):
+        x = transforms.ToPILImage()(x.squeeze(0)) # workaround
+        y1 = self.transform(x)
+        y2 = self.transform_prime(x)
+        return y1.unsqueeze(0).cuda(), y2.unsqueeze(0).cuda() # workaround
+
+class LARS(torch.optim.Optimizer):
+    def __init__(self, params, lr, weight_decay=0, momentum=0.9, eta=0.001,
+                 weight_decay_filter=False, lars_adaptation_filter=False):
+        defaults = dict(lr=lr, weight_decay=weight_decay, momentum=momentum,
+                        eta=eta, weight_decay_filter=weight_decay_filter,
+                        lars_adaptation_filter=lars_adaptation_filter)
+        super().__init__(params, defaults)
+
+
+    def exclude_bias_and_norm(self, p):
+        return p.ndim == 1
+
+    @torch.no_grad()
+    def step(self):
+        for g in self.param_groups:
+            for p in g['params']:
+                dp = p.grad
+
+                if dp is None:
+                    continue
+
+                if not g['weight_decay_filter'] or not self.exclude_bias_and_norm(p):
+                    dp = dp.add(p, alpha=g['weight_decay'])
+
+                if not g['lars_adaptation_filter'] or not self.exclude_bias_and_norm(p):
+                    param_norm = torch.norm(p)
+                    update_norm = torch.norm(dp)
+                    one = torch.ones_like(param_norm)
+                    q = torch.where(param_norm > 0.,
+                                    torch.where(update_norm > 0,
+                                                (g['eta'] * param_norm / update_norm), one), one)
+                    dp = dp.mul(q)
+
+                param_state = self.state[p]
+                if 'mu' not in param_state:
+                    param_state['mu'] = torch.zeros_like(p)
+                mu = param_state['mu']
+                mu.mul_(g['momentum']).add_(dp)
+
+                p.add_(mu, alpha=-g['lr'])
 
 if __name__ == '__main__':
     main()
