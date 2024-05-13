@@ -4,7 +4,7 @@ import torchvision
 
 from torchvision.datasets.utils import download_and_extract_archive, download_url
 
-from avalanche.benchmarks.generators import nc_benchmark
+from avalanche.benchmarks.scenarios.deprecated.generators import nc_benchmark
 from .image_filelist_dataset import ImageFilelist
 
 
