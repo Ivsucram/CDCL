@@ -572,7 +572,7 @@ def main():
         dataset_target_train = create_dataset(args.dataset_target, is_training=False, args=args)
         dataset_target_eval = create_dataset(args.dataset_target, is_training=False, args=args)
 
-    # create data loaders w/ augmentation pipeiine
+    # create data loaders w/ augmentation pipeline
     (loader_source_train, loader_source_eval,
      loader_target_train, loader_target_eval,
      num_aug_splits, mixup_active, mixup_fn) = create_loaders(
