@@ -111,3 +111,5 @@ data/
 *.gz
 Untitled.ipynb
 Testing notebook.ipynb
+
+.vscode/
